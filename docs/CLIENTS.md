@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | Codex CLI | 独立 OpenAI Responses provider | 此 CLI 会话使用指定网关模型 |
 | WorkBuddy | Magpie 原生 adapter 或自定义 Chat Completions 模型 | 当前任务选用了网关模型 |
+| WorkBuddy 外援路线 | 保留当前主模型，使用已授权文件工具与本机 worker | 宿主把明确子任务交给 Gemini，主模型不变 |
 | Muse 桌面／网页产品 | 产品支持的命令／MCP，或已授权设备文件工具配合本机 worker | Agent 可以把指定子任务交给 Gemini；主模型不变 |
 | Grok Bot | 所在运行环境中的命令或 MCP 工具入口 | Agent 可以把子任务交给 Gemini |
 
@@ -57,6 +58,14 @@ python3 scripts/agent_kit.py plan --client workbuddy --model "完整模型 ID" -
 
 目前 Magpie adapter 的配置目标为 `~/.workbuddy/models.json`（可被 `WORKBUDDY_CONFIG_DIR` 覆盖）；国际版为 `~/.workbuddy-ai`。已有文件可能是数组或包含 `models` 的对象，不要直接用示例覆盖整份配置。实现参考：[workbuddy.go](https://github.com/yetone/magpie/blob/main/internal/agent/workbuddy.go)。
 
+### 保留 WorkBuddy 主模型，用 Gemini 作外援
+
+WorkBuddy 若能读写已授权的本机文件，也可使用[文件桥](FILE_BRIDGE.md)：当前主模型读取任务材料，将完整子任务写入专用队列，本机 worker 调用指定网关模型，再由 WorkBuddy 读取结果、检查并落地。这与自定义主模型是两条路线；`plan --client workbuddy` 的自定义模型配置不能代替文件桥部署。
+
+本次实测保留 Hy4 作宿主，委托 Gemini 写稿：一次真实请求 HTTP 200、94.759 秒，私有请求／结果哈希和保存的回包均匹配。Gemini 原稿加入了材料未提供的活动安排；宿主保留原稿，仅删去两段，并保存最终 192 字正文。最终稿约束通过，但须标注经过宿主事实编辑，不能称为未经修改的模型原稿。此前 WorkBuddy 直接选用 Gemini 的任务以 429 结束，仍单独记录；外援成功不证明主模型替换成功。订单任务与改变输入复验尚未完成。
+
+外援验收也要保留专用请求 ID、私有回执、原始回包和最终文件；共享文件中的 `success: true` 只有与私有回执哈希匹配后才构成调用证据。宿主编辑与额外模型调用分开统计，不把文件整理算成又一次 Gemini 成功请求。
+
 ## Muse / Grok Bot：工具接入
 
 这里提供的是 stdio MCP 工具 `ask_gemini`。宿主 Agent 负责规划、工具选择、权限和最终交付；Gemini 完成明确交给它的文字任务。
@@ -101,6 +110,8 @@ python3 scripts/agent_kit.py plan --client muse --model "完整模型 ID" --outp
 若 Grok Bot 已有虚拟机中的 Pi／Magpie 工作流，先检查原配置和实际模型目录，保留其他 provider。也可在该虚拟机部署用户授权的 Manager，让 Pi 访问同一虚拟机的回环地址。由操作者在虚拟机终端启动 Pi 得到产物，只证明虚拟机内这条调用路径；还要由 Grok Bot 聊天实际发起并收取结果，才算宿主调度通过。
 
 外层 Grok Bot 的周额度与 Gemini 来源额度分别记录。虚拟机可用不等于聊天额度已恢复；不能把 Pi 在虚拟机完成的任务写成 Grok Bot 主模型已替换，或声称外层 Agent 可以无限使用。
+
+本轮 VM 的两次 Pi 写稿任务均收到上游 429，`message.stopReason=error`，未产生稿件文件，任务完成为 0/2。Pi 进程退出码虽然为 0，仍应判失败。两次任务之间的独立短探针收到 HTTP 200，却只返回 `task ready`，未完成要求的三个中文开头；只说明收到回复，不能算内容验收通过。外层 Grok Bot 周额度当时耗尽，宿主调度也未通过。该轮已停止追加请求，登录和模型目录截图只作配置证据。
 
 ### 同名 Muse 的区别
 

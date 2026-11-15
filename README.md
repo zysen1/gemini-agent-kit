@@ -6,7 +6,19 @@
 
 > 请读取 https://github.com/zysen1/gemini-agent-kit 的 AGENTS.md，直接在我的环境中完成接入：优先复用已有网关；我指定 Antigravity Manager 时按仓库的 Manager 指南操作，否则使用 Magpie；缺少软件则安装对应项目官方发布版并启动；动态读取模型目录，选择我可用的 Gemini 模型；连接我已安装的 Agent，完成真实任务验收并保存脱敏结果。需要登录或导入我授权的账号时使用对应应用界面，其他可执行步骤请继续完成。
 
-[完整交给 Agent 的提示词](PROMPT.md) · [Antigravity Manager 接入](docs/ANTIGRAVITY_MANAGER.md) · [各客户端接法](docs/CLIENTS.md) · [Muse 文件桥接](docs/FILE_BRIDGE.md) · [本机请求排队](docs/PACED_PROXY.md) · [模型与额度](docs/MODELS_AND_LIMITS.md) · [验证范围与实测状态](docs/STATUS.md)
+[完整交给 Agent 的提示词](PROMPT.md) · [Antigravity Manager 接入](docs/ANTIGRAVITY_MANAGER.md) · [各客户端接法](docs/CLIENTS.md) · [设备文件桥接](docs/FILE_BRIDGE.md) · [本机请求排队](docs/PACED_PROXY.md) · [模型与额度](docs/MODELS_AND_LIMITS.md) · [验证范围与实测状态](docs/STATUS.md)
+
+## 本次实际交付
+
+| 客户端与路线 | 已完成的真实任务 | 范围与记录 |
+| --- | --- | --- |
+| Codex CLI 使用 Gemini 模型来源 | 首次与改变输入后的写稿、订单读写，最终 **4/4 项完成** | 历史 8 次 CLI 尝试中 4 次完整结束；最新补验收约 400 秒，包含两轮 120 秒等待 |
+| Muse 委托 Gemini 外援 | 首次写稿、订单整理 **2 项成果** | 两次真实调用及落盘文件已核对；主模型不变，稿件仅由宿主规范了 CTA 引号 |
+| WorkBuddy 的 Hy4 宿主 + Gemini 外援 | 首次写稿 **1 项成果** | 一次真实调用成功；Hy4 保留原稿，只删掉两段材料未提供的活动安排，最终正文 192 字 |
+| WorkBuddy 主模型直连 | 未通过 | 本轮上游 429；不把外援成功写成主模型替换成功 |
+| Grok Bot / 虚拟机 Pi | 登录和目录已核对；Pi 文件任务 **0/2 完成** | 两次任务均遇到 429、未产出文件；独立短探针虽收到 HTTP 200，却未按要求生成内容。外层 Grok Bot 周额度耗尽，宿主调度未通过 |
+
+这是本次具体环境的任务记录，保留失败分母与宿主编辑过程。任务最终完成比例、单次请求成功比例与长期稳定性不同，详见[完整验收状态](docs/STATUS.md)。
 
 ## 快速开始
 
@@ -44,13 +56,11 @@ python3 scripts/agent_kit.py plan --client muse --model "完整模型 ID" --outp
 python3 scripts/agent_kit.py plan --client grokbot --model "完整模型 ID" --output reports/grokbot-plan-01.json
 ```
 
-`plan` 生成可核对的配置，不会替你点击客户端。执行 Agent 应继续按 [AGENTS.md](AGENTS.md) 完成配置、真实任务和验收。Codex 启动器只影响当前 CLI 进程；WorkBuddy 用自定义模型；Muse / Grok Bot 的通用路线是 `ask_gemini` 外部工具，原 Agent 继续规划任务。Muse 若只有已授权的 Mac 文件工具，可按[文件桥接指南](docs/FILE_BRIDGE.md)让本机 worker 代为调用，仍属于外部工具接入。
+`plan` 生成可核对的配置，不会替你点击客户端。执行 Agent 应继续按 [AGENTS.md](AGENTS.md) 完成配置、真实任务和验收。Codex 启动器只影响当前 CLI 进程；WorkBuddy 可用自定义模型，也可保留当前主模型使用文件桥外援；Muse / Grok Bot 的通用路线是 `ask_gemini` 外部工具，原 Agent 继续规划任务。具有已授权设备文件工具时，可按[文件桥接指南](docs/FILE_BRIDGE.md)让本机 worker 代为调用，仍属于外部工具接入。
 
 同一本机 Manager 的连续工具回合需要冷却时，可使用[请求排队代理](docs/PACED_PROXY.md)，把本次客户端地址改为 `http://127.0.0.1:8046/v1`。它串行等待，不增加额度、不改型号、不自动重试；真实客户端状态以[验收记录](docs/STATUS.md)为准。
 
-本机已正常升级并核验 Manager `5.0.3`，排队间隔调为 120 秒。等待期间检测到客户端断连会取消尚未发出的请求；点击停止但连接未关闭的情况仍需由客户端处理。升级后的 WorkBuddy 实测仍出现上游 429，因此本仓库不承诺消除额度限制；版本差异与各端实际结果见[Manager 指南](docs/ANTIGRAVITY_MANAGER.md)和[验收记录](docs/STATUS.md)。
-
-Codex 已完成首次和改变输入后的中文写稿、订单读写，最终四项任务均通过。历史共 8 次 CLI 尝试，4 次完整结束；最新订单复验在 `5.0.3` 下完成三次 HTTP 200 往返，含排队总耗时约 400 秒。完整日志与失败分母分别保留，具体条件见[验收记录](docs/STATUS.md)。
+本机已正常升级并核验 Manager `5.0.3`，排队间隔调为 120 秒。等待期间检测到客户端断连会取消尚未发出的请求；点击停止但连接未关闭的情况仍需由客户端处理。升级后的 WorkBuddy 主模型直连仍出现上游 429，因此本仓库不承诺消除额度限制；版本差异见[Manager 指南](docs/ANTIGRAVITY_MANAGER.md)。
 
 ## 网关在哪里
 
