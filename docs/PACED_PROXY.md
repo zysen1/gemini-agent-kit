@@ -1,0 +1,84 @@
+# 本机请求排队代理
+
+`scripts/paced_proxy.py` 给**已经正常授权的单个本机网关**增加串行等待，适合工具回合接连请求而上游需要冷却的情况。它固定监听 `127.0.0.1:8046`，固定转发到 `127.0.0.1:8045`，不创建公网入口。
+
+每个推理请求的完整响应（包括 SSE 流）结束后，下一个推理请求至少等待 **35 秒**。等待发生在代理内部，不会因为正在排队就提前返回 503。客户端也必须允许足够长的请求等待时间；此代理不能改变客户端自己的超时限制。
+
+它不增加账号额度，不清除限流，不切换账号，不修改 `model`，也不自动重试失败请求。上游仍可能返回额度、授权或其他错误。
+
+## 启动
+
+需要 Python 3.10+，仅使用标准库。先在当前进程环境中安全设置 `GEMINI_AGENT_GATEWAY_KEY` 为已有网关的代理密钥；不要把密钥写在命令参数、截图或仓库里。启动示例只包含非敏感参数：
+
+```sh
+python3 scripts/paced_proxy.py --interval 35 --metadata-log reports/paced-proxy-metadata.jsonl
+```
+
+启动时会向 stderr 输出监听地址、上游地址、间隔和自动重试次数，不显示密钥。CLI 不提供修改主机或端口的选项；端口占用时停止并报告错误，不终止原服务。`--interval` 可以增大，CLI 拒绝小于 35 的值。`--upstream-timeout` 默认 600 秒，是上游 socket 超时，不含代理排队等待。
+
+运行期间保持进程开启。待客户端任务结束后，用该终端的 Ctrl+C 停止；不要在流式任务进行中停止代理。
+
+## 客户端地址
+
+客户端继续使用同一个 `GEMINI_AGENT_GATEWAY_KEY`，仅把本次会话的地址改到排队代理。所有路由均要求 `Authorization: Bearer ...`，密钥与环境变量值进行常量时间比较；不会把未经验证的客户端 Authorization 转发给上游。
+
+| 用法 | 地址 |
+| --- | --- |
+| OpenAI Base URL | `http://127.0.0.1:8046/v1` |
+| 完整 Chat Completions URL | `http://127.0.0.1:8046/v1/chat/completions` |
+| Responses URL | `http://127.0.0.1:8046/v1/responses` |
+| Messages URL | `http://127.0.0.1:8046/v1/messages` |
+
+Codex 可通过仓库的单次启动器使用，不需要修改全局配置：
+
+```sh
+python3 scripts/agent_kit.py models --base-url http://127.0.0.1:8046/v1
+python3 scripts/agent_kit.py launch-codex --base-url http://127.0.0.1:8046/v1 --model "实时目录中的完整ID"
+```
+
+只有上游和客户端都在本机时，这个回环地址才成立。云端客户端的 localhost 指向云端自身。该脚本不提供远程访问或 HTTP MCP 部署。
+
+## 路由与等待
+
+| 路由 | 行为 |
+| --- | --- |
+| `GET /v1/models`、`GET /v1/version` | 立即转发，不进入推理队列 |
+| `GET /healthz`、`GET /readyz` | 立即返回本代理的准备状态；明确 `upstream_checked:false`，不证明上游模型可调用 |
+| `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/messages` | 共用全局锁，等待、发请求、接收完整响应全程串行 |
+| 其他路由、绝对外部 URL | 拒绝；不能用作任意转发代理 |
+
+`GET /v1/models` 另外允许 Codex 使用的单个非空 `client_version` 参数，例如 `?client_version=0.139.0`；参数会原样转发，但不写入元数据日志。重复参数、其他参数、其他路由的查询参数均拒绝。
+
+代理缓冲 JSON 请求体后入队；普通 SDK 的固定长度 JSON 请求可用。请求须有合法 `Content-Length`，最大 32 MiB；不接受分块上传请求。压缩请求体会按原字节转发，保留其 `Content-Encoding`，不读取或修改其中的模型、提示词或工具内容。
+
+每次推理响应结束后，以 `max(配置间隔, 上游提示的冷却秒数)` 决定下一次开始时间。仅对 429/503 解析以下提示，并取其中最长值：
+
+- `Retry-After` 秒数或 HTTP 日期。
+- Google 错误结构中的 `retryDelay`（如 `45s`，或 `seconds`/`nanos` 对象）。
+- Manager 的 `managerCooldown`、`cooldown`、`cooldownSeconds`，以及 `Cooldown wait 30s` 等错误文本。
+
+发生错误的那一次请求仍按原状态码、原正文返回。代理不会替用户再次发送它；等待只约束**下一个**请求。没有可解析提示时仍保留至少 35 秒间隔。队列采用全局互斥串行，不承诺严格 FIFO 顺序。
+
+排队期间每隔最多 0.25 秒检查客户端连接，在发送上游请求前再检查一次。若已收到 TCP EOF 或连接重置，该请求退出队列，不发送到上游，也不增加或清除已有冷却时间。日志中的 `upstream_attempted:false`、空状态码和 `client_disconnected_before_upstream` 表示取消发生在上游尝试之前，不代表一次模型失败。
+
+该检测是尽力而为：客户端必须在等候响应时保持连接双向打开；主动半关闭写入方向（`SHUT_WR`）也按取消处理。断连与发送之间仍存在很短的竞争窗口；已经开始的上游推理不能保证被撤销。如果客户端点击停止后仍保持 socket 打开，代理无法仅凭 HTTP 判断其 UI 已取消。
+
+## 透明转发与记录
+
+SSE 使用可用字节分块读取并及时刷新，不等待整个答案完成才发出首帧，不改写 SSE 事件。HTTP 分块帧由代理重新编码，事件正文保持原字节。响应保留上游的模型、路由等普通头；这些字段依然只是上游自报信息，不能单独鉴定模型来源。
+
+请求和响应都会去掉 hop-by-hop 头，以及 `Connection` 中额外列出的连接级头。响应的 `Content-Length` / `Transfer-Encoding` 按实际代理传输重新生成。上游 3xx 一律转为 502，且不返回 `Location`，防止客户端跟随跳转离开固定回环上游。代理自身也不跟随任何重定向。
+
+独立 JSONL 日志只记录已匹配路由、状态码、等待/耗时、响应字节数、下次最短等待和固定错误代码，不记录凭据、完整请求/响应、模型头或提示词。文件创建权限为 `0600`；记录值不能直接推算 token 用量或费用。
+
+转发中连接中断时，代理关闭未完成的响应，并记录 `stream_aborted` 等元数据，不拼接一个虚假的成功结尾。上游连接失败或超时分别返回 502/504；上游的 429/503 保持原样。
+
+## 验证范围
+
+```sh
+python3 -W error::ResourceWarning -m unittest discover -s tests -p test_paced_proxy.py -v
+```
+
+测试仅访问随机本机端口上的 fixture，使用模拟时钟推进 35 秒间隔，不等待几十秒、不消耗真实模型额度。覆盖 SSE 首帧、错误透传、禁止跳转、共享队列、等待锁或冷却时断连、发送前再次取消、GET 绕过、冷却解析、头过滤和日志去敏。测试通过不代表真实客户端已经接入，也不代表上游不会再次限流。
+
+真实验收应另留请求前后的输入、客户端执行记录、产物、成功/失败次数和代理元数据；调度调整前后的结果分开统计。
