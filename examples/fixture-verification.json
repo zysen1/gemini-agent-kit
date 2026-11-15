@@ -1,0 +1,42 @@
+{
+  "sample": true,
+  "verification_mode": "fixture_only",
+  "real_model_calls": 0,
+  "upstream_model_identity_verified": false,
+  "gateway_is_example": true,
+  "scope": "Local synthetic HTTP fixture testing this CLI protocol only; no Gemini, Magpie account, or client end-to-end test was performed.",
+  "kit_version": "0.1.0",
+  "timestamp_utc": "2026-11-15T10:17:08Z",
+  "requested_model": "fixture/google/gemini-argon",
+  "client_end_to_end_verified": false,
+  "tests": [
+    {
+      "name": "short_text",
+      "passed": true,
+      "provider_reported_model": "fixture-reported-model",
+      "usage": {
+        "total_tokens": 1
+      },
+      "response_preview": "KIT_TEXT_8f2c6aa176b2"
+    },
+    {
+      "name": "tool_round_trip",
+      "passed": true,
+      "function_executed": "local deterministic kit_probe; no shell or files",
+      "provider_reported_model": "fixture-reported-model",
+      "tool_call_usage": {
+        "total_tokens": 1
+      },
+      "final_response_usage": {
+        "total_tokens": 1
+      },
+      "response_preview": "5e5a6b691bbd93ae186bf9489745b32a7200adb7aad507208c98ecfd8eda7a52"
+    }
+  ],
+  "request_count": 3,
+  "request_count_basis": "Attempted inference requests, including failed requests.",
+  "passed": true,
+  "elapsed_seconds": 0.003,
+  "gateway": "http://127.0.0.1:43425/v1",
+  "interpretation": "The fixture generated these successful responses. request_count counts fixture HTTP inference-shaped requests; usage is synthetic and elapsed_seconds measures only a local fixture. This is not evidence of real-model quality, quota, speed, model provenance, or Codex/WorkBuddy/Muse/Grokbot acceptance."
+}
