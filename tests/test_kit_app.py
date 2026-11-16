@@ -347,7 +347,9 @@ class KitAppTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.getheader("Content-Type"), "text/event-stream")
             self.assertEqual(response.read(len(FIRST_EVENT)), FIRST_EVENT)
-            self.assertTrue(self.upstream.first_sent.is_set())
+            # Receiving flushed bytes can beat the fixture thread's next
+            # instruction; synchronize its marker without releasing the tail.
+            self.assertTrue(self.upstream.first_sent.wait(1))
             self.assertFalse(self.upstream.stream_completed.is_set(), "first SSE event must reach client before upstream completes")
             self.upstream.release_stream.set()
             self.assertEqual(response.read(), LAST_EVENT)
