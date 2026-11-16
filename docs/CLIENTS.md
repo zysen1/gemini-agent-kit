@@ -7,6 +7,7 @@
 | Codex CLI | 独立 OpenAI Responses provider | 此 CLI 会话使用指定网关模型 |
 | WorkBuddy | Magpie 原生 adapter 或自定义 Chat Completions 模型 | 当前任务选用了网关模型 |
 | WorkBuddy 外援路线 | 保留当前主模型，使用已授权文件工具与本机 worker | 宿主把明确子任务交给 Gemini，主模型不变 |
+| DSH NEXT | 独立的 OpenAI Chat Completions provider | 配置保存后，还需在应用中选中模型并完成真实任务 |
 | Muse 桌面／网页产品 | 产品支持的命令／MCP，或已授权设备文件工具配合本机 worker | Agent 可以把指定子任务交给 Gemini；主模型不变 |
 | Grok Bot | 所在运行环境中的命令或 MCP 工具入口 | Agent 可以把子任务交给 Gemini |
 
@@ -65,6 +66,23 @@ WorkBuddy 若能读写已授权的本机文件，也可使用[文件桥](FILE_BR
 本次实测保留 Hy4 作宿主，委托 Gemini 写稿：一次真实请求 HTTP 200、94.759 秒，私有请求／结果哈希和保存的回包均匹配。Gemini 原稿加入了材料未提供的活动安排；宿主保留原稿，仅删去两段，并保存最终 192 字正文。最终稿约束通过，但须标注经过宿主事实编辑，不能称为未经修改的模型原稿。此前 WorkBuddy 直接选用 Gemini 的任务以 429 结束，仍单独记录；外援成功不证明主模型替换成功。订单任务与改变输入复验尚未完成。
 
 外援验收也要保留专用请求 ID、私有回执、原始回包和最终文件；共享文件中的 `success: true` 只有与私有回执哈希匹配后才构成调用证据。宿主编辑与额外模型调用分开统计，不把文件整理算成又一次 Gemini 成功请求。
+
+## DSH NEXT
+
+入口是 **设置 → 模型（Settings → Models）**，添加独立的自定义来源。以下入口按 DSH `2.0.22-next` 随包说明核对；让执行 Agent 先备份，再增加来源，保留原有模型与凭据。
+
+| 字段 | 配置示例 |
+| --- | --- |
+| 来源名称 | `Gemini Agent Kit` |
+| API 类型 | `openai-completions` |
+| Base URL | 已启用本机[排队代理](PACED_PROXY.md)时使用 `http://127.0.0.1:8046/v1`；其他情况填实际网关地址 |
+| 模型 ID | `gemini-4-argon-high`，必须先确认真实目录存在该完整 ID |
+| 凭据 | 在本机私有 credentials 中保存网关密钥，来源引用 `GEMINI_AGENT_GATEWAY_KEY`；不填 Google Refresh Token |
+| 自动重试 | `retryPolicy.maxRetries: 0`，不因限流自动追加请求 |
+
+保存来源不会切换当前模型。会话输入框旁的模型按钮，或 `/model` 命令，可打开按来源分组的菜单；找到 `Gemini Agent Kit → Gemini 4 Argon High`。**点击选择会更新 DSH 的全局默认模型**，测试结束若要保留原默认，请切回原来的 DeepSeek。
+
+本轮已在原生客户端确认菜单显示 `Gemini Agent Kit / Gemini 4 Argon High`。一次真实短测使用 `gemini-agent-kit/gemini-4-argon-high` 路由，请求到达上游但返回 `429 RESOURCE_EXHAUSTED`，完成 **0/1**；响应未给出具体 `Retry-After` 或配额类型，不据此判断恢复时间。等待恢复可用后，再执行真实文件任务并改变输入复验。界面与路由已确认，不代表主模型任务通过。
 
 ## Muse / Grok Bot：工具接入
 

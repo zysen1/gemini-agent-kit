@@ -63,6 +63,7 @@ python3 scripts/kit_app.py --open
 | Muse 委托 Gemini 外援 | 首次写稿、订单整理 **2 项成果** | 两次真实调用及落盘文件已核对；主模型不变，稿件仅由宿主规范了 CTA 引号 |
 | WorkBuddy 的 Hy4 宿主 + Gemini 外援 | 首次写稿 **1 项成果** | 一次真实调用成功；Hy4 保留原稿，只删掉两段材料未提供的活动安排，最终正文 192 字 |
 | WorkBuddy 主模型直连 | 未通过 | 本轮上游 429；不把外援成功写成主模型替换成功 |
+| DSH NEXT 自定义模型来源 | 界面与路由已确认；真实短测 **0/1 完成** | 请求到达上游，返回 `429 RESOURCE_EXHAUSTED`；恢复可用后复验，接法见 [DSH 指南](docs/CLIENTS.md#dsh-next) |
 | Grok Bot / 虚拟机 Pi | 登录和目录已核对；Pi 文件任务 **0/2 完成** | 两次任务均遇到 429、未产出文件；独立短探针虽收到 HTTP 200，却未按要求生成内容。外层 Grok Bot 周额度耗尽，宿主调度未通过 |
 
 这是本次具体环境的任务记录，保留失败分母与宿主编辑过程。任务最终完成比例、单次请求成功比例与长期稳定性不同，详见[完整验收状态](docs/STATUS.md)。
@@ -96,6 +97,8 @@ python3 scripts/agent_kit.py launch-codex --model "完整模型 ID"
 若目录中恰好只有一个 Gemini Argon 条目，可省略 `--model`。存在多个来源或其他型号时必须指定，程序不会偷偷换模型。
 
 ## 其他客户端
+
+DSH NEXT 可添加独立的 OpenAI Chat Completions 模型来源，保留现有默认模型；按 [DSH 指南](docs/CLIENTS.md#dsh-next)配置后，在应用里选中它并单独验收。
 
 ```sh
 python3 scripts/agent_kit.py plan --client workbuddy --model "完整模型 ID" --output reports/workbuddy-plan-01.json
