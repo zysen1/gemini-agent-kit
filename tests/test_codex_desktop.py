@@ -4,6 +4,7 @@ The desktop helper requires Python 3.11. Keep discovery usable on the legacy
 CLI's Python 3.10 by skipping this module before importing tomllib/the helper.
 """
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -272,6 +273,44 @@ name = "second"
                 self.apply()
         self.assertEqual(self.config.read_text(encoding="utf-8"), edited)
         self.assertEqual(list(self.config.parent.glob(".config.toml.kit-*")), [])
+
+    def test_atomic_replace_closes_source_descriptor_for_windows(self):
+        original = b'model = "before"\n'
+        self.config.write_bytes(original)
+        original_mode = stat.S_IMODE(self.config.stat().st_mode)
+        actual_mkstemp = desktop.tempfile.mkstemp
+        actual_replace = desktop.os.replace
+        descriptors = {}
+        replacements = []
+
+        def tracked_mkstemp(*args, **kwargs):
+            descriptor, temporary = actual_mkstemp(*args, **kwargs)
+            descriptors[os.fspath(temporary)] = descriptor
+            return descriptor, temporary
+
+        def windows_replace(source, destination):
+            descriptor = descriptors[os.fspath(source)]
+            try:
+                os.fstat(descriptor)
+            except OSError as error:
+                self.assertEqual(error.errno, errno.EBADF)
+            else:
+                raise PermissionError("Simulated WinError 32: source temporary file is still open")
+            if os.name == "posix":
+                expected_mode = original_mode if destination == self.config and self.config in replacements else 0o600
+                self.assertEqual(stat.S_IMODE(os.stat(source).st_mode),
+                                 expected_mode)
+            replacements.append(Path(destination))
+            return actual_replace(source, destination)
+
+        # Cover both configuration and receipt updates, including restoration.
+        with mock.patch.object(desktop.tempfile, "mkstemp", side_effect=tracked_mkstemp), \
+                mock.patch.object(desktop.os, "replace", side_effect=windows_replace):
+            receipt = self.apply()
+            desktop.restore(self.config, receipt["receipt_path"])
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertEqual(replacements.count(self.config), 2)
+        self.assertEqual(replacements.count(Path(receipt["receipt_path"])), 2)
 
     def test_restore_refuses_post_install_user_edits(self):
         self.config.write_text('model = "before"\n')

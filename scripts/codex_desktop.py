@@ -410,12 +410,18 @@ def _replace_if_unchanged(path: Path, data: bytes, expected_hash, mode=0o600):
             stream.write(data)
             stream.flush()
             os.fsync(descriptor)
+        # Windows cannot replace an open source file. Close our raw descriptor
+        # before the final hash check/rename; closefd=False above only closes
+        # the Python stream wrapper, not the underlying descriptor.
+        os.close(descriptor)
+        descriptor = None
         if _sha(_read(path, missing=True)) != expected_hash:
             raise ConfigError("Configuration changed concurrently; refusing to overwrite it.")
         _path(path)
         os.replace(temporary, path)
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
         if os.path.exists(temporary):
             os.unlink(temporary)
 
