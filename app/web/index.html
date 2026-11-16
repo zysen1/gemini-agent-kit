@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>Gemini Agent Kit · 本机控制台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Gemini Agent Kit 首页"><span class="brand-mark" aria-hidden="true">✳</span><span>Gemini <strong>Agent Kit</strong></span></a>
+      <div class="topbar-meta"><span id="connection-state" class="badge neutral" role="status">正在连接</span><button id="refresh-state" class="button quiet" type="button">刷新</button></div>
+    </header>
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <h1 id="page-title">三步，把 Gemini 接进 Codex。</h1>
+        <p class="hero-copy">准备服务，导入账号，完成接入。也可以把仓库链接交给你的 Agent，让它带你做。</p>
+      </section>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <div id="feedback" class="feedback" role="status" aria-live="polite" tabindex="-1" hidden></div>
+      <div class="flow">
+        <section class="panel" aria-labelledby="runtime-title">
+          <div class="panel-header"><div class="step-heading"><span class="number">1</span><h2 id="runtime-title">准备服务</h2></div><span id="runtime-badge" class="badge neutral">等待检查</span></div>
+          <div class="step-body">
+            <p class="section-copy">首次会下载独立的 Antigravity Tools 运行组件，然后在本机启动。</p>
+            <div class="service-row"><span id="runtime-detail" class="service-detail">正在读取本机状态…</span><button id="setup-runtime" class="button primary mutation" type="button" disabled>准备并启动</button></div>
+            <div id="runtime-install" class="runtime-install" role="status" hidden><p id="runtime-install-instructions"></p><a id="runtime-install-link" href="https://github.com/lbjlaq/Antigravity-Manager/releases/tag/v5.0.3" target="_blank" rel="noopener noreferrer">打开官方下载（v5.0.3）↗</a></div>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="accounts-title">
+          <div class="panel-header"><div class="step-heading"><span class="number">2</span><h2 id="accounts-title">导入账号</h2></div><span id="accounts-badge" class="badge neutral">未连接</span></div>
+          <div class="step-body">
+            <form id="import-form" autocomplete="off">
+              <label for="refresh-token" class="field-label">Refresh Token</label>
+              <div class="import-row"><input id="refresh-token" name="refresh-token" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="粘贴你已授权使用的 Refresh Token" aria-describedby="token-help" required><button id="import-account" class="button primary mutation" type="submit" disabled>导入账号</button></div>
+              <p id="token-help" class="field-help">输入会隐藏，提交后清空。不要把它发进聊天或截图。</p>
+            </form>
+            <div class="list-heading"><h3>我的账号</h3><span id="account-count" class="muted">0 个</span></div>
+            <div id="accounts-list" class="accounts-list"><div class="empty-state">还没有账号，启动服务后在上方导入。</div></div>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="codex-title">
+          <div class="panel-header"><div class="step-heading"><span class="number">3</span><h2 id="codex-title">连接 Codex</h2></div><span id="codex-badge" class="badge neutral">尚未配置</span></div>
+          <div class="step-body">
+            <label for="model-select" class="field-label">选择模型</label>
+            <div class="model-row"><select id="model-select" aria-describedby="model-help" disabled><option value="">导入账号后读取模型</option></select><button id="check-model" class="button primary mutation" type="button" disabled>检查并准备配置</button></div>
+            <p id="model-help" class="field-help">会发送一次短请求，消耗少量额度。不会自动重试或换模型。</p>
+            <div id="check-result" class="result-box" hidden></div>
+            <div id="config-review" class="config-review" hidden>
+              <div><strong>配置预览已准备好</strong><p>保留原配置和当前默认模型，添加一个 Gemini 来源。</p></div>
+              <button id="apply-codex" class="button primary mutation" type="button" disabled>确认接入 Codex</button>
+            </div>
+            <details id="config-preview" class="details" hidden><summary>展开配置详情</summary><pre id="preview-content" class="code-block" tabindex="0"></pre></details>
+            <p id="codex-detail" class="handoff-note">配置后重启 Codex，在设置的网关中启用 Gemini Agent Kit，再新建会话完成真实文件任务。</p>
+            <div id="codex-receipt" class="result-box" hidden></div>
+          </div>
+        </section>
+      </div>
+      <details class="advanced" id="advanced">
+        <summary><span>高级选项</span><span class="muted">API 地址 · 恢复 · 组件许可</span></summary>
+        <div class="advanced-content">
+          <section><h3>给其他 Agent 使用</h3><dl class="details-list"><div><dt>API 地址</dt><dd id="api-address">等待读取</dd></div><div><dt>当前模型</dt><dd id="api-model">尚未选择</dd></div><div><dt>访问凭据</dt><dd id="api-key-state">等待检查</dd></div></dl><p>密钥由本机凭据助手处理，页面不显示它。</p><button id="copy-connection" class="button secondary" type="button" disabled>复制地址与型号</button></section>
+          <section><h3>配置与恢复</h3><p>只准备配置不会消耗模型额度。恢复前会检查后续改动；停止服务会影响正在调用的任务。</p><div class="actions"><button id="preview-codex" class="button secondary mutation" type="button" disabled>仅准备配置</button><button id="restore-codex" class="button secondary mutation" type="button" disabled>恢复 Codex 原配置</button><button id="stop-runtime" class="button danger mutation" type="button" disabled>停止本工具管理的服务</button></div></section>
+          <section><h3>真实任务验收</h3><p>配置完成、短请求通过、Codex 桌面任务通过是三个不同状态。如果执行 Agent 无法控制 Codex 自身窗口，请你在客户端完成新会话测试。CLI 结果不能替代桌面实测。</p></section>
+          <section><h3>最近操作</h3><p class="muted">仅显示当前页面的操作状态，不记录凭据或完整请求。</p><ul id="activity-list" class="activity-list"><li>还没有操作记录。</li></ul></section>
+          <section><h3>组件来源与许可</h3><p>这是 Gemini Agent Kit 自有界面，使用独立的社区项目 Antigravity Tools 连接账号和提供上游协议。它不是 Google 官方应用。</p><p>上游采用 <strong>CC BY-NC-SA 4.0</strong>（署名、非商业、相同方式共享）。本仓库的许可不替代上游许可。</p><div class="source-links"><a href="https://github.com/lbjlaq/Antigravity-Manager" target="_blank" rel="noopener noreferrer">上游项目 ↗</a><a href="https://github.com/lbjlaq/Antigravity-Manager/blob/v5.0.3/LICENSE" target="_blank" rel="noopener noreferrer">上游许可证 ↗</a><span id="license-version" class="muted">运行版本：尚未读取</span></div></section>
+        </div>
+      </details>
+    </main>
+    <footer><span>Gemini Agent Kit · 本机运行</span><span>接通之后，让它交作业。</span></footer>
+  </div>
+  <noscript><div class="noscript">请启用 JavaScript 后使用本机控制台。</div></noscript>
+</body>
+</html>

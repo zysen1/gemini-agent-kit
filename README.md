@@ -1,12 +1,46 @@
 # Gemini Agent Kit
 
-**把这个仓库交给你的 Agent，让它把已有的 Gemini 模型源接进你常用的工作流。**
+**一个本机面板，导入你授权的账号，把 Gemini 接进 Codex。**
 
-默认复用已有 Magpie，也支持 **Antigravity Manager 的独立网关路线**：发现网关、读取真实模型目录、连接客户端，再检查文字回复和工具调用。支持 Codex CLI、WorkBuddy，以及具有命令、MCP 或已授权设备文件工具的 Muse / Grok Bot 工作流。**不要求 Google AI Studio 项目密钥。**
+不需要先申请 Google AI Studio 项目密钥。仓库自带账号管理、模型选择和接入界面，使用独立安装的 Antigravity Tools 提供账号连接与上游 API；也可复用你已有的 Manager。它们都是社区工具，不是 Google 官方产品。
 
-> 请读取 https://github.com/zysen1/gemini-agent-kit 的 AGENTS.md，直接在我的环境中完成接入：优先复用已有网关；我指定 Antigravity Manager 时按仓库的 Manager 指南操作，否则使用 Magpie；缺少软件则安装对应项目官方发布版并启动；动态读取模型目录，选择我可用的 Gemini 模型；连接我已安装的 Agent，完成真实任务验收并保存脱敏结果。需要登录或导入我授权的账号时使用对应应用界面，其他可执行步骤请继续完成。
+<details>
+<summary>查看实际面板</summary>
 
-[完整交给 Agent 的提示词](PROMPT.md) · [Antigravity Manager 接入](docs/ANTIGRAVITY_MANAGER.md) · [各客户端接法](docs/CLIENTS.md) · [设备文件桥接](docs/FILE_BRIDGE.md) · [本机请求排队](docs/PACED_PROXY.md) · [模型与额度](docs/MODELS_AND_LIMITS.md) · [验证范围与实测状态](docs/STATUS.md)
+![本机三步面板：真实回复通过，Codex 配置已添加，桌面任务待验收](docs/images/local-panel.png)
+
+</details>
+
+**复制这一段，发给你的 Agent：**
+
+```text
+请读取 https://github.com/zysen1/gemini-agent-kit 的 AGENTS.md，帮我安装并打开本机面板，准备服务，把我授权的 Gemini 来源接进 Codex。优先复用我已有的 Manager，否则准备仓库支持的独立组件。需要账号信息时让我在本机面板输入，不要让我发到聊天。读取真实模型目录，检查一次模型，备份并添加 Codex 配置，保留我当前的默认模型。最后带我在 Codex 新会话完成一个真实文件任务，分别说明配置、网关检查和桌面实测的结果。
+```
+
+自己操作也是三步：
+
+1. **准备服务**：下载仓库，双击 Mac 的 `启动面板.command` 或 Windows 的 `启动面板.bat`，在页面点击「准备并启动」。需要 Python **3.11+**；Windows 首次按提示安装官方组件。
+2. **导入账号**：把你授权使用的、`1//` 开头的完整 Refresh Token 填进本机页面，点击「导入账号」。不用粘贴账号密码，也不用发到聊天。
+3. **连接 Codex**：选择实际可用的模型，点击「检查并准备配置」，查看预览后「确认接入 Codex」。保存工作、重启 Codex，在设置的网关（Gateways）中启用 Gemini Agent Kit，再新建会话选择模型，做一次真实文件任务。
+
+终端启动方式：
+
+```sh
+git clone https://github.com/zysen1/gemini-agent-kit.git
+cd gemini-agent-kit
+python3 scripts/kit_app.py --open
+```
+
+面板地址：**http://127.0.0.1:8787**。使用时保留启动窗口，用 `Ctrl+C` 可关闭面板及它管理的服务。默认只添加 Codex 来源，**不会切换当前默认模型或旧会话**。
+
+进度分别记录为**配置完成、模型短测通过、Codex 桌面真实任务通过**。桌面最后一步需要你在客户端完成；其他 Agent 按各自的接入方式逐个验收。历史 CLI 成果与桌面结果分别记录。
+
+[详细使用与恢复](docs/LOCAL_PANEL.md) · [完整 Agent 口令](PROMPT.md) · [其他 Agent 接法](docs/CLIENTS.md) · [模型与额度](docs/MODELS_AND_LIMITS.md) · [实测记录](docs/STATUS.md)
+
+运行组件固定为 Antigravity Tools **5.0.3**，从上游官方 Release 下载并核验摘要；Windows 使用已安装的官方版本。本仓库原创代码采用 MIT，上游组件采用 **CC BY-NC-SA 4.0**，两者分别适用，见 [第三方声明](THIRD_PARTY_NOTICES.md)。仓库不提供账号或额度，也不承诺无限使用。
+
+<details>
+<summary>已有 CLI、Magpie、其他 Agent 与历史实测记录</summary>
 
 ## 本次实际交付
 
@@ -20,7 +54,7 @@
 
 这是本次具体环境的任务记录，保留失败分母与宿主编辑过程。任务最终完成比例、单次请求成功比例与长期稳定性不同，详见[完整验收状态](docs/STATUS.md)。
 
-## 快速开始
+## CLI 快速开始
 
 需要 Python 3.10+；脚本只用标准库。Windows 可将 `python3` 换成 `py -3`。
 
@@ -88,7 +122,7 @@ Manager 的 **API 网关密钥** 用于客户端连接；Google **Refresh Token*
 | `file_bridge.py` | 用已授权的设备文件读写交接请求和结果；本机 worker 调用网关，保留独立回执 |
 | `paced_proxy.py` | 为本机 `8045` 网关增加串行冷却，客户端使用 `8046`；不自动重试 |
 
-Magpie、Antigravity Manager 或其他兼容网关负责来源连接和协议转换；本仓库负责发现、配置辅助和验收。仓库本身没有账号、订阅或模型额度，也不承诺某种消费者订阅必然能转换成 API。关于 Google 登录路径与型号权限，见 [模型与额度说明](docs/MODELS_AND_LIMITS.md)。
+上表是原有 CLI 工具。新增本机面板还提供账号管理界面、独立组件生命周期、带鉴权的本机 API 和可恢复的 Codex 配置；上游来源连接与协议转换由独立的 Antigravity Tools 承担。仓库本身没有账号、订阅或模型额度，也不承诺某种消费者订阅必然能转换成 API。关于 Google 登录路径与型号权限，见 [模型与额度说明](docs/MODELS_AND_LIMITS.md)。
 
 ## 开发验证
 
@@ -97,3 +131,5 @@ python3 -m unittest discover -s tests -v
 ```
 
 这些测试使用本地模拟服务验证程序行为，不会调用真实 Gemini。测试通过与真实模型、客户端端到端成功是不同的证据，见 [STATUS](docs/STATUS.md)。
+
+</details>
