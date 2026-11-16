@@ -32,7 +32,10 @@ class CodexDesktopTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.config = self.root / "codex" / "config.toml"
         self.config.parent.mkdir()
-        self.state = self.root / 'private space "quoted"' / "state.json"
+        # Windows forbids double quotes in filenames; still exercise spaces,
+        # quoting and Unicode there without making fixture creation invalid.
+        private_folder = "private space 'quoted' 测试" if os.name == "nt" else 'private space "quoted"'
+        self.state = self.root / private_folder / "state.json"
         self.state.parent.mkdir()
         self.secret = "offline-fixture-gateway-secret-only"
         self.state.write_text(json.dumps({"gateway_key": self.secret, "upstream_token": "never-read-this"}))
