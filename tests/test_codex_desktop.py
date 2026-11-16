@@ -53,7 +53,7 @@ class CodexDesktopTests(unittest.TestCase):
         return desktop.apply(self.config, self.state, self.url, self.model, **kwargs)
 
     def load(self):
-        return tomllib.loads(self.config.read_text())
+        return tomllib.loads(self.config.read_text(encoding="utf-8"))
 
     def test_preview_is_read_only_and_does_not_read_private_state(self):
         original = b'model = "existing" # untouched\n[features]\nunknown = true\n'
@@ -98,9 +98,9 @@ name = "first"
 name = "second"
 '''
         tomllib.loads(original)
-        self.config.write_text(original)
+        self.config.write_text(original, encoding="utf-8")
         receipt = self.apply()
-        self.assertTrue(self.config.read_text().startswith(original))
+        self.assertTrue(self.config.read_text(encoding="utf-8").startswith(original))
         parsed = self.load()
         self.assertEqual(parsed["model"], "gpt-existing")
         self.assertEqual(parsed["model_provider"], "openai")
@@ -137,14 +137,14 @@ name = "second"
 
     def test_activation_handles_multiline_values_and_inserted_missing_root(self):
         original = 'model = """\nold model with # and =\n[inside.string]\n"""  # keep\n[features]\nx = true\n'
-        self.config.write_text(original)
+        self.config.write_text(original, encoding="utf-8")
         receipt = self.apply(activate=True)
-        updated = self.config.read_text()
+        updated = self.config.read_text(encoding="utf-8")
         self.assertTrue(updated.startswith('model_provider = "gemini_agent_kit"\n'))
         self.assertIn('model = "gemini-4-argon-high"  # keep', updated)
         self.assertTrue(self.load()["features"]["x"])
         desktop.restore(self.config, receipt["receipt_path"])
-        self.assertEqual(self.config.read_text(), original)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
 
     def test_activation_inserts_before_tables_with_no_root_keys(self):
         self.config.write_text('[features]\nfoo = true\n')
@@ -169,7 +169,7 @@ name = "second"
 
     def test_activate_after_provider_only_install_then_restore_each_step(self):
         original = 'model = "original"\n'
-        self.config.write_text(original)
+        self.config.write_text(original, encoding="utf-8")
         provider_receipt = self.apply()
         provider_only = self.config.read_bytes()
         activated = self.apply(activate=True)
@@ -178,43 +178,43 @@ name = "second"
         desktop.restore(self.config, activated["receipt_path"])
         self.assertEqual(self.config.read_bytes(), provider_only)
         desktop.restore(self.config, provider_receipt["receipt_path"])
-        self.assertEqual(self.config.read_text(), original)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
 
     def test_conflicting_provider_never_silently_overwritten(self):
         original = '[model_providers.gemini_agent_kit]\nbase_url = "https://other.invalid/v1"\n'
-        self.config.write_text(original)
+        self.config.write_text(original, encoding="utf-8")
         with self.assertRaises(desktop.ConfigError):
             self.apply()
-        self.assertEqual(self.config.read_text(), original)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), original)
 
     def test_existing_unknown_provider_setting_is_preserved_but_auth_conflict_rejected(self):
         self.apply()
-        text = self.config.read_text().replace('name = "Gemini Agent Kit"', 'name = "Gemini Agent Kit"\ncustom_unknown = "retained"')
-        self.config.write_text(text)
+        text = self.config.read_text(encoding="utf-8").replace('name = "Gemini Agent Kit"', 'name = "Gemini Agent Kit"\ncustom_unknown = "retained"')
+        self.config.write_text(text, encoding="utf-8")
         self.assertFalse(self.apply()["changed"])
-        self.assertEqual(self.config.read_text(), text)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), text)
         text = text.replace('custom_unknown = "retained"', 'requires_openai_auth = false')
-        self.config.write_text(text)
+        self.config.write_text(text, encoding="utf-8")
         with self.assertRaises(desktop.ConfigError):
             self.preview()
-        self.assertEqual(self.config.read_text(), text)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), text)
 
     def test_existing_global_catalog_is_preserved_and_warning_returned(self):
         original = 'model_catalog_json = "/existing/private-catalog.json"\n'
-        self.config.write_text(original)
+        self.config.write_text(original, encoding="utf-8")
         plan = self.preview()
         self.assertEqual(len(plan["warnings"]), 1)
         self.apply()
-        self.assertTrue(self.config.read_text().startswith(original))
+        self.assertTrue(self.config.read_text(encoding="utf-8").startswith(original))
         self.assertEqual(self.load()["model_catalog_json"], "/existing/private-catalog.json")
 
     def test_invalid_toml_or_nonextensible_inline_table_does_not_overwrite(self):
         for text in ('model = "broken', 'model_providers = { old = { name = "keep" } }\n'):
             with self.subTest(text=text):
-                self.config.write_text(text)
+                self.config.write_text(text, encoding="utf-8")
                 with self.assertRaises(desktop.ConfigError):
                     self.apply()
-                self.assertEqual(self.config.read_text(), text)
+                self.assertEqual(self.config.read_text(encoding="utf-8"), text)
 
     def test_restore_exact_backup_and_permissions_are_private(self):
         original = b'# original\nmodel = "original"\n'
@@ -245,10 +245,10 @@ name = "second"
         self.config.write_text('model = "before"\n')
         reviewed = self.preview()
         changed = 'model = "user-changed-it"\n'
-        self.config.write_text(changed)
+        self.config.write_text(changed, encoding="utf-8")
         with self.assertRaisesRegex(desktop.ConfigError, "after preview"):
             self.apply(expected_before_sha256=reviewed["before_sha256"])
-        self.assertEqual(self.config.read_text(), changed)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), changed)
         self.assertEqual(list((self.config.parent / desktop.BACKUP_DIR).glob("*.receipt.json")), [])
 
     def test_expected_missing_rejects_file_created_after_preview(self):
@@ -264,23 +264,23 @@ name = "second"
 
         def concurrent(path, data, expected, *args):
             if path == self.config:
-                self.config.write_text(edited)
+                self.config.write_text(edited, encoding="utf-8")
             return actual_replace(path, data, expected, *args)
 
         with mock.patch.object(desktop, "_replace_if_unchanged", side_effect=concurrent):
             with self.assertRaisesRegex(desktop.ConfigError, "concurrently"):
                 self.apply()
-        self.assertEqual(self.config.read_text(), edited)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), edited)
         self.assertEqual(list(self.config.parent.glob(".config.toml.kit-*")), [])
 
     def test_restore_refuses_post_install_user_edits(self):
         self.config.write_text('model = "before"\n')
         receipt = self.apply()
-        edited = self.config.read_text() + '\n# User changed config after install\n'
-        self.config.write_text(edited)
+        edited = self.config.read_text(encoding="utf-8") + '\n# User changed config after install\n'
+        self.config.write_text(edited, encoding="utf-8")
         with self.assertRaisesRegex(desktop.ConfigError, "edited after installation"):
             desktop.restore(self.config, receipt["receipt_path"])
-        self.assertEqual(self.config.read_text(), edited)
+        self.assertEqual(self.config.read_text(encoding="utf-8"), edited)
 
     def test_restore_detects_corrupt_backup(self):
         self.config.write_text('model = "before"\n')
@@ -308,7 +308,7 @@ name = "second"
         linked_dir.symlink_to(self.config.parent, target_is_directory=True)
         with self.assertRaises(desktop.ConfigError):
             desktop.preview(linked_dir / "config.toml", self.state, self.url, self.model)
-        self.assertEqual(target.read_text(), 'model = "do not change"\n')
+        self.assertEqual(target.read_text(encoding="utf-8"), 'model = "do not change"\n')
 
     @unittest.skipUnless(hasattr(os, "symlink"), "Symlinks are unavailable")
     def test_symlink_backup_directory_and_receipt_are_refused(self):
@@ -339,11 +339,11 @@ name = "second"
         self.config.write_text(f'model = "original" # {old_secret}\n[model_providers.private]\nexperimental_bearer_token = "{old_secret}"\n')
         plan = self.preview(activate=True)
         receipt = self.apply(activate=True)
-        public = json.dumps([plan, receipt]) + Path(receipt["receipt_path"]).read_text()
+        public = json.dumps([plan, receipt]) + Path(receipt["receipt_path"]).read_text(encoding="utf-8")
         self.assertNotIn(self.secret, public)
         self.assertNotIn(old_secret, public)
         self.assertNotIn("never-read-this", public)
-        self.assertIn(old_secret, self.config.read_text())
+        self.assertIn(old_secret, self.config.read_text(encoding="utf-8"))
 
     def test_credential_helper_reads_only_gateway_key_and_never_logs_errors(self):
         output, errors = io.StringIO(), io.StringIO()

@@ -103,7 +103,7 @@ class KitCore:
         self.state_path = self.data_dir / "state.json"
         if self.state_path.is_symlink():
             raise AppError("UNSAFE_PATH", "配置文件不能使用符号链接。")
-        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {
+        self.state = json.loads(self.state_path.read_text(encoding="utf-8")) if self.state_path.exists() else {
             "schema": 1, "gateway_key": secrets.token_urlsafe(36), "selected_model": None,
             "last_check": None, "last_codex_receipt": None}
         if not isinstance(self.state.get("gateway_key"), str) or len(self.state["gateway_key"]) < 24:
@@ -132,7 +132,7 @@ class KitCore:
         if self.manager_config:
             if self.manager_config.is_symlink() or self.manager_config.stat().st_size > MAX_ADMIN:
                 raise AppError("UNSAFE_CONFIG", "指定的 Manager 配置不适合读取。")
-            cfg = json.loads(self.manager_config.read_text())
+            cfg = json.loads(self.manager_config.read_text(encoding="utf-8"))
             p = cfg["proxy"]
             origin = local_origin("http://127.0.0.1:" + str(int(p["port"])))
             key = p["api_key"]
@@ -198,7 +198,7 @@ class KitCore:
         configured = False
         try:
             import tomllib
-            cfg = tomllib.loads((Path.home() / ".codex/config.toml").read_text())
+            cfg = tomllib.loads((Path.home() / ".codex/config.toml").read_text(encoding="utf-8"))
             provider = cfg.get("model_providers", {}).get("gemini_agent_kit", {})
             configured = provider.get("base_url") == self.origin + "/v1"
         except (OSError, ValueError, TypeError):
