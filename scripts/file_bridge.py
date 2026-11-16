@@ -230,7 +230,7 @@ class BoundDirectory:
 
 
 class Worker:
-    def __init__(self, queue: Path, gateway, min_interval=35, stable_seconds=1, receipt_dir=None):
+    def __init__(self, queue: Path, gateway, min_interval=0, stable_seconds=1, receipt_dir=None):
         if os.name != "posix":
             raise ValueError("The file relay currently requires macOS or Linux directory-descriptor support.")
         if not queue.is_absolute():
@@ -357,7 +357,7 @@ def main(argv=None):
     parser.add_argument("--base-url", default="http://127.0.0.1:8045/v1")
     parser.add_argument("--model", required=True)
     parser.add_argument("--timeout", type=float, default=180)
-    parser.add_argument("--min-interval", type=float, default=35)
+    parser.add_argument("--min-interval", type=float, default=0, help="Optional extra pause between requests; default 0, upstream cooldown still applies")
     parser.add_argument("--once", action="store_true", help="Process at most one complete request, then exit.")
     args = parser.parse_args(argv)
     lock = None

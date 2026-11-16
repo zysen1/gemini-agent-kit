@@ -153,7 +153,7 @@ class KitAppTests(unittest.TestCase):
         self.manager_config.write_text(json.dumps({"proxy": {"port": self.upstream.server_port,
             "api_key": UPSTREAM_KEY, "admin_password": ADMIN_KEY}}))
         self.manager_config.chmod(0o600)
-        self.core = app.KitCore(self.root / "private", port=8787, manager_config=self.manager_config, interval=0)
+        self.core = app.KitCore(self.root / "private", port=8787, manager_config=self.manager_config)
         self.server = app.make_server(self.core, port=0)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         self.thread.start()
@@ -305,6 +305,36 @@ class KitAppTests(unittest.TestCase):
         for _, path, auth, _ in self.upstream.calls:
             self.assertEqual(auth, "Bearer " + (ADMIN_KEY if path.startswith("/api/") else UPSTREAM_KEY))
 
+    def test_connection_copy_returns_only_kit_key_without_upstream_calls_or_logs(self):
+        self.core.state["selected_model"] = MODEL
+        status, headers, raw = self.admin("/api/connection", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(json.loads(raw), {"ok": True, "base_url": self.core.origin + "/v1",
+            "model": MODEL, "api_key": self.core.state["gateway_key"]})
+        for value in (UPSTREAM_KEY, ADMIN_KEY, TOKEN):
+            self.assertNotIn(value, raw.decode())
+        self.assertEqual(self.upstream.calls, [])
+        self.assertFalse((self.core.data_dir / "calls.jsonl").exists())
+
+    def test_connection_copy_requires_explicit_session_and_same_origin_post(self):
+        status, _, raw = self.admin("/api/connection")
+        self.assertEqual(status, 404)
+        self.assert_no_private_values(raw)
+        for missing, expected in (("Cookie", 401), ("Origin", 403), ("X-CSRF-Token", 403)):
+            with self.subTest(missing=missing):
+                headers = self.headers(admin=True)
+                del headers[missing]
+                status, _, raw = self.request("/api/connection", method="POST", payload={}, headers=headers)
+                self.assertEqual(status, expected)
+                self.assert_no_private_values(raw)
+        headers = self.headers(admin=True)
+        headers["Origin"] = "https://unrelated.example"
+        status, _, raw = self.request("/api/connection", method="POST", payload={}, headers=headers)
+        self.assertEqual(status, 403)
+        self.assert_no_private_values(raw)
+        self.assertEqual(self.upstream.calls, [])
+
     def test_models_and_native_codex_catalog_use_exact_filtered_ids(self):
         status, _, raw = self.gateway("/v1/models")
         self.assertEqual(status, 200)
@@ -371,6 +401,24 @@ class KitAppTests(unittest.TestCase):
         self.assert_no_private_values(raw)
         self.assertEqual(len(self.posts()), 1)
         self.assert_no_private_values((self.core.data_dir / "calls.jsonl").read_text())
+
+    def test_default_requests_do_not_pause_but_honor_real_upstream_cooldown(self):
+        clock, sleeps = [1000.0], []
+        def advance(seconds):
+            sleeps.append(seconds)
+            clock[0] += seconds
+        self.core.gate.clock = lambda: clock[0]
+        self.core.gate.sleep = advance
+        payload = {"model": MODEL, "input": "fixture"}
+        for _ in range(2):
+            self.assertEqual(self.gateway("/v1/responses", payload)[0], 200)
+        self.assertEqual(sleeps, [])
+        self.upstream.mode = "error"
+        self.assertEqual(self.gateway("/v1/responses", payload)[0], 429)
+        self.upstream.mode = "normal"
+        self.assertEqual(self.gateway("/v1/responses", payload)[0], 200)
+        self.assertAlmostEqual(sum(sleeps), 4.0)
+        self.assertEqual(len(self.posts()), 4, "upstream errors must not be retried automatically")
 
     def test_upstream_redirect_not_followed_and_location_not_exposed(self):
         self.upstream.mode = "redirect"

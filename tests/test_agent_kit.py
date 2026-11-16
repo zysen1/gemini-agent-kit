@@ -175,14 +175,15 @@ class TestKit(unittest.TestCase):
         self.assertEqual(len(self.fixture.calls), 2)
 
     def test_plans_do_not_contain_credentials_or_claim_client_success(self):
-        for client in ("codex", "workbuddy", "muse", "grokbot"):
+        for client in ("codex", "workbuddy", "muse", "grokbot", "doubao", "generic"):
             with self.subTest(client=client):
                 plan = kit.make_plan(self.gateway, Fixture.models[0], client)
                 self.assertNotIn(Fixture.secret, json.dumps(plan))
                 self.assertEqual(plan["status"], "configuration_plan_only")
-                if client in ("muse", "grokbot"):
+                if client in ("muse", "grokbot", "doubao", "generic"):
                     self.assertEqual(plan["mode"], "external_tool_delegation")
                     self.assertIn("cannot use your Mac", plan["host_boundary"])
+                    self.assertIn("stdio MCP", plan["capability_requirement"])
 
     def test_cloud_plan_preserves_timeout_and_explicit_http_choice(self):
         remote=kit.Gateway("http://192.0.2.20/v1", timeout=90, allow_insecure=True, environ={kit.KEY_ENV: Fixture.secret})
@@ -254,6 +255,45 @@ class TestKit(unittest.TestCase):
             self.assertEqual(run.returncode,0,run.stderr)
             self.assertTrue(json.loads(report.read_text())["passed"])
             self.assertNotIn(Fixture.secret,report.read_text()+run.stdout+run.stderr)
+
+    def test_ask_command_sends_one_utf8_task_and_saves_private_reply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task, output = Path(directory)/"task.txt", Path(directory)/"answer.json"
+            prompt = "Reply with exactly this text and nothing else: 中文写作任务 🧪"
+            task.write_text(prompt, encoding="utf-8")
+            env = os.environ.copy(); env[kit.KEY_ENV] = Fixture.secret
+            command = [sys.executable, str(SCRIPT), "ask", "--base-url", self.url,
+                       "--model", Fixture.models[1], "--prompt-file", str(task), "--output", str(output)]
+            run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(result["text"], "中文写作任务 🧪")
+            self.assertEqual(result["requested_model"], Fixture.models[1])
+            self.assertEqual(result["provider_reported_model"], "fixture-reported-model")
+            self.assertEqual(len(self.fixture.calls), 1)
+            self.assertEqual(self.fixture.calls[0]["messages"], [{"role": "user", "content": prompt}])
+            self.assertNotIn(Fixture.secret, run.stdout + run.stderr + json.dumps(result))
+            self.assertNotIn("中文写作任务", run.stdout)
+            before = output.read_bytes()
+            run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(run.returncode, 1)
+            self.assertEqual(output.read_bytes(), before)
+            self.assertEqual(len(self.fixture.calls), 1, "existing output must fail before another generation")
+
+    def test_ask_command_rejects_bad_task_and_limits_before_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task, output = Path(directory)/"task.txt", Path(directory)/"answer.json"
+            env = os.environ.copy(); env[kit.KEY_ENV] = Fixture.secret
+            for content, limit in ((b" ", "1024"), (b"x" * 64001, "1024"), (b"\xff", "1024"), (b"task", "0")):
+                with self.subTest(size=len(content), limit=limit):
+                    task.write_bytes(content)
+                    run = subprocess.run([sys.executable, str(SCRIPT), "ask", "--base-url", self.url,
+                        "--prompt-file", str(task), "--output", str(output), "--max-tokens", limit],
+                        env=env, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(run.returncode, 1, run.stderr)
+                    self.assertEqual(json.loads(run.stderr)["error"], "INVALID_PROMPT")
+                    self.assertFalse(output.exists())
+            self.assertEqual(self.fixture.calls, [])
 
     def test_existing_report_is_rejected_before_inference(self):
         with tempfile.TemporaryDirectory() as directory:

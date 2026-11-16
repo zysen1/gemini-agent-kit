@@ -17,8 +17,8 @@
     </header>
     <main>
       <section class="hero" aria-labelledby="page-title">
-        <h1 id="page-title">三步，把 Gemini 接进 Codex。</h1>
-        <p class="hero-copy">准备服务，导入账号，完成接入。也可以把仓库链接交给你的 Agent，让它带你做。</p>
+        <h1 id="page-title">三步，把 Gemini 接进你的 Agent。</h1>
+        <p class="hero-copy">把仓库链接交给 Agent，让它准备服务。你只需在本机导入账号，再把 API 填进常用的 Agent。</p>
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <div id="feedback" class="feedback" role="status" aria-live="polite" tabindex="-1" hidden></div>
@@ -43,29 +43,33 @@
             <div id="accounts-list" class="accounts-list"><div class="empty-state">还没有账号，启动服务后在上方导入。</div></div>
           </div>
         </section>
-        <section class="panel" aria-labelledby="codex-title">
-          <div class="panel-header"><div class="step-heading"><span class="number">3</span><h2 id="codex-title">连接 Codex</h2></div><span id="codex-badge" class="badge neutral">尚未配置</span></div>
+        <section class="panel" aria-labelledby="api-title">
+          <div class="panel-header"><div class="step-heading"><span class="number">3</span><h2 id="api-title">接入你的 Agent</h2></div><span id="api-badge" class="badge neutral">等待选择模型</span></div>
           <div class="step-body">
             <label for="model-select" class="field-label">选择模型</label>
-            <div class="model-row"><select id="model-select" aria-describedby="model-help" disabled><option value="">导入账号后读取模型</option></select><button id="check-model" class="button primary mutation" type="button" disabled>检查并准备配置</button></div>
-            <p id="model-help" class="field-help">会发送一次短请求，消耗少量额度。不会自动重试或换模型。</p>
-            <div id="check-result" class="result-box" hidden></div>
-            <div id="config-review" class="config-review" hidden>
-              <div><strong>配置预览已准备好</strong><p>保留原配置和当前默认模型，添加一个 Gemini 来源。</p></div>
-              <button id="apply-codex" class="button primary mutation" type="button" disabled>确认接入 Codex</button>
-            </div>
-            <details id="config-preview" class="details" hidden><summary>展开配置详情</summary><pre id="preview-content" class="code-block" tabindex="0"></pre></details>
-            <p id="codex-detail" class="handoff-note">配置后重启 Codex，在设置的网关中启用 Gemini Agent Kit，再新建会话完成真实文件任务。</p>
-            <div id="codex-receipt" class="result-box" hidden></div>
+            <select id="model-select" aria-describedby="model-help" disabled><option value="">导入账号后读取模型</option></select>
+            <p id="model-help" class="field-help">选择后自动保存，不会发送模型请求。型号和权限以账号实际返回为准。</p>
+            <dl class="details-list connection-list"><div><dt>Base URL</dt><dd id="api-address">等待读取</dd></div><div><dt>Model ID</dt><dd id="api-model">尚未选择</dd></div><div><dt>API Key</dt><dd id="api-key-state">等待检查</dd></div></dl>
+            <div class="actions"><button id="copy-connection" class="button primary" type="button" disabled>复制接入信息</button><button id="copy-api-key" class="button secondary" type="button" disabled>复制 API Key</button></div>
+            <p class="handoff-note">在目标 Agent 中添加 OpenAI 兼容服务，填写以上三项。API Key 是本机网关的访问密钥，请直接粘进客户端设置，不要发进聊天。</p>
+            <p class="field-help">此地址供同一台电脑使用。云端或虚拟机里的 Agent，需要把服务部署在它可访问的位置。用 Codex？<a id="show-codex-options" href="#advanced">展开可选配置</a>。</p>
+            <details class="details"><summary>可选：发送一次短请求检查连接</summary><p class="field-help">消耗少量额度，不自动重试或换模型；通过后仍需在目标 Agent 中完成实际任务。</p><div class="actions"><button id="check-model" class="button secondary mutation" type="button" disabled>测试一次</button></div><div id="check-result" class="result-box" hidden></div></details>
           </div>
         </section>
       </div>
       <details class="advanced" id="advanced">
-        <summary><span>高级选项</span><span class="muted">API 地址 · 恢复 · 组件许可</span></summary>
+        <summary><span>高级选项</span><span class="muted">可选 Codex 配置 · 服务 · 组件许可</span></summary>
         <div class="advanced-content">
-          <section><h3>给其他 Agent 使用</h3><dl class="details-list"><div><dt>API 地址</dt><dd id="api-address">等待读取</dd></div><div><dt>当前模型</dt><dd id="api-model">尚未选择</dd></div><div><dt>访问凭据</dt><dd id="api-key-state">等待检查</dd></div></dl><p>密钥由本机凭据助手处理，页面不显示它。</p><button id="copy-connection" class="button secondary" type="button" disabled>复制地址与型号</button></section>
-          <section><h3>配置与恢复</h3><p>只准备配置不会消耗模型额度。恢复前会检查后续改动；停止服务会影响正在调用的任务。</p><div class="actions"><button id="preview-codex" class="button secondary mutation" type="button" disabled>仅准备配置</button><button id="restore-codex" class="button secondary mutation" type="button" disabled>恢复 Codex 原配置</button><button id="stop-runtime" class="button danger mutation" type="button" disabled>停止本工具管理的服务</button></div></section>
-          <section><h3>真实任务验收</h3><p>配置完成、短请求通过、Codex 桌面任务通过是三个不同状态。如果执行 Agent 无法控制 Codex 自身窗口，请你在客户端完成新会话测试。CLI 结果不能替代桌面实测。</p></section>
+          <section aria-labelledby="codex-title">
+            <div class="panel-header"><h3 id="codex-title">可选：添加 Codex 来源</h3><span id="codex-badge" class="badge neutral">尚未配置</span></div>
+            <p>常规接入不需要这一步。只有你明确要给 Codex 添加来源时，才使用下面的按钮；准备配置不会修改客户端，也不消耗模型额度。</p>
+            <div class="actions"><button id="preview-codex" class="button secondary mutation" type="button" disabled>预览 Codex 配置</button><button id="restore-codex" class="button secondary mutation" type="button" disabled>恢复 Codex 原配置</button></div>
+            <div id="config-review" class="config-review" hidden><div><strong>配置预览已准备好</strong><p>保留原配置和当前默认模型，添加一个 Gemini 来源。</p></div><button id="apply-codex" class="button primary mutation" type="button" disabled>确认添加 Codex 来源</button></div>
+            <details id="config-preview" class="details" hidden><summary>展开配置详情</summary><pre id="preview-content" class="code-block" tabindex="0"></pre></details>
+            <p id="codex-detail" class="handoff-note">仅在确认添加后修改配置。配置完成后，在 Codex 新会话中检查实际效果。</p>
+            <div id="codex-receipt" class="result-box" hidden></div>
+          </section>
+          <section><h3>管理服务</h3><p>停止服务会影响正在调用本机 API 的任务，请先结束相关任务。</p><button id="stop-runtime" class="button danger mutation" type="button" disabled>停止本工具管理的服务</button></section>
           <section><h3>最近操作</h3><p class="muted">仅显示当前页面的操作状态，不记录凭据或完整请求。</p><ul id="activity-list" class="activity-list"><li>还没有操作记录。</li></ul></section>
           <section><h3>组件来源与许可</h3><p>这是 Gemini Agent Kit 自有界面，使用独立的社区项目 Antigravity Tools 连接账号和提供上游协议。它不是 Google 官方应用。</p><p>上游采用 <strong>CC BY-NC-SA 4.0</strong>（署名、非商业、相同方式共享）。本仓库的许可不替代上游许可。</p><div class="source-links"><a href="https://github.com/lbjlaq/Antigravity-Manager" target="_blank" rel="noopener noreferrer">上游项目 ↗</a><a href="https://github.com/lbjlaq/Antigravity-Manager/blob/v5.0.3/LICENSE" target="_blank" rel="noopener noreferrer">上游许可证 ↗</a><span id="license-version" class="muted">运行版本：尚未读取</span></div></section>
         </div>

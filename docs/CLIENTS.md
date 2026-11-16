@@ -1,99 +1,100 @@
-# 客户端接入
+# 把 Gemini 接进你的 Agent
 
-先确保 `doctor` 能读到目录，选择 `models` 返回的完整模型 ID。网关可访问、模型可调用、客户端能完成任务是三层不同检查。
+把仓库链接发给 Muse、GrokBot、Codex、WorkBuddy、豆包工作或其他 Agent，并让它先读 [执行指引](AGENT_HANDOFF.md)。**接手的 Agent 按自己实际拥有的工具完成配置**：能改模型就直连，能接工具就把 Gemini 作为外援。产品名本身不代表某个版本一定开放了相同接口。
 
-| 客户端 | 本仓库路线 | 结果应如何描述 |
+## 先拿到三个值
+
+默认使用仓库面板，无需另装排队代理。面板第三步提供：
+
+| 字段 | 本仓库面板的默认值 |
+| --- | --- |
+| OpenAI 兼容 Base URL | `http://127.0.0.1:8787/v1` |
+| 完整 Chat Completions URL | `http://127.0.0.1:8787/v1/chat/completions` |
+| 完整 Responses URL | `http://127.0.0.1:8787/v1/responses` |
+| Model / 模型 ID | 面板从真实目录读出的完整 ID；选中后复制 |
+| API Key | 面板的「复制 API Key」按钮；只粘贴到本机客户端的密钥框 |
+
+填写 **Base URL** 的位置只填到 `/v1`；填写**完整 API URL** 的位置才加 `/chat/completions` 或 `/responses`。API Key 是本机网关密钥，不是 Google Refresh Token，也不是账号密码。
+
+Agent 读取目录时，通过它所在环境的私密凭据机制传入 `GEMINI_AGENT_GATEWAY_KEY`，不要打印值：
+
+```sh
+python3 scripts/agent_kit.py doctor --base-url http://127.0.0.1:8787/v1
+python3 scripts/agent_kit.py models --base-url http://127.0.0.1:8787/v1
+```
+
+已使用 Magpie 或 Antigravity Manager 的用户可保留原网关，换成其实际地址和对应凭据即可。后面的示例统一采用面板地址；不是要求重装已正常工作的服务。所有 `127.0.0.1` 示例都要求调用者与网关处于同一台机器或同一运行环境。
+
+## 选择接入方式
+
+| Agent | 优先检查的入口 | 完成后是什么效果 |
 | --- | --- | --- |
-| Codex CLI | 独立 OpenAI Responses provider | 此 CLI 会话使用指定网关模型 |
-| WorkBuddy | Magpie 原生 adapter 或自定义 Chat Completions 模型 | 当前任务选用了网关模型 |
-| WorkBuddy 外援路线 | 保留当前主模型，使用已授权文件工具与本机 worker | 宿主把明确子任务交给 Gemini，主模型不变 |
-| DSH NEXT | 独立的 OpenAI Chat Completions provider | 配置保存后，还需在应用中选中模型并完成真实任务 |
-| Muse 桌面／网页产品 | 产品支持的命令／MCP，或已授权设备文件工具配合本机 worker | Agent 可以把指定子任务交给 Gemini；主模型不变 |
-| Grok Bot | 所在运行环境中的命令或 MCP 工具入口 | Agent 可以把子任务交给 Gemini |
+| Codex 桌面 | 面板的可选 Codex 配置；见下文 | 新增可选择的 Gemini 来源 |
+| Codex CLI | `launch-codex` | 仅这次启动的 CLI 会话使用指定来源 |
+| WorkBuddy | 当前版本的自定义模型界面 | 选中后由网关模型承担该任务的模型调用 |
+| Muse | 当前产品的 MCP / 命令连接器；或已授权设备文件工具 | Gemini 作为外援完成明确子任务 |
+| GrokBot / Grok Bot | 自己的虚拟机、命令或 MCP 工具 | 在该运行环境调用 Gemini 并收回结果 |
+| 豆包工作 | 先检查当前版本是否开放自定义模型、MCP、HTTP 或本机文件工具 | 按实际接口选择直连或外援；本仓库尚未完成其产品级验收 |
+| DSH NEXT | 自定义 OpenAI Chat Completions 来源 | 新增模型后，在目标会话中选择 |
+| 其他 Agent | 自定义 OpenAI API，或 stdio MCP | 使用同一套 API 或 `ask_gemini` 工具 |
 
-## Codex CLI
+只有自定义模型入口时走直连；只有工具入口时走外援。外援保留宿主原来的主模型。**配置保存、网关有回复、客户端完成任务**分别记录；支持某种协议不等于所有产品版本已实测通过。
+
+## Codex
+
+### 桌面客户端
+
+用户明确要连接 Codex 时，打开面板高级选项里的 Codex 配置：选择真实型号，生成配置预览，再确认添加。面板会私有备份原配置，增加独立来源，保留现有默认模型。恢复也走面板的恢复按钮，不覆盖用户后续更改。
+
+使用时保持网关运行。若要重启 Codex，先把面板放在独立终端或用户级后台服务中，不能依赖即将退出的 Codex 会话。重启后按当前客户端支持的来源选择入口启用 `Gemini Agent Kit`，再开新会话选择型号。若执行 Agent 无法操作自身窗口，只交接这一步给用户，其他可完成的准备先做好。详细操作见 [本机面板](LOCAL_PANEL.md)。
+
+### CLI：只影响本次启动
 
 ```sh
-python3 scripts/agent_kit.py launch-codex --model "完整模型 ID" --dry-run
-python3 scripts/agent_kit.py launch-codex --model "完整模型 ID"
+python3 scripts/agent_kit.py launch-codex --base-url http://127.0.0.1:8787/v1 --model "完整模型 ID"
 ```
 
-启动器设置独立 `magpie_kit` provider、`base_url`、`env_key` 和 `wire_api="responses"`，将网关凭据传给子进程。不写全局 `config.toml`。退出该进程即可结束这一会话的配置。
-
-额外 Codex 参数放在 `--` 后，例如：
+启动器设置独立 Responses provider，把网关密钥通过子进程环境传入，不写全局 `config.toml`。退出该进程即可结束这次配置。额外参数放在 `--` 后，例如：
 
 ```sh
-python3 scripts/agent_kit.py launch-codex --model "完整模型 ID" -- exec "阅读当前目录的 brief.txt，生成三个不同开头并保存为 draft.txt"
+python3 scripts/agent_kit.py launch-codex --base-url http://127.0.0.1:8787/v1 --model "完整模型 ID" -- exec "读取 brief.txt，把三个不同开头保存为 draft.txt"
 ```
 
-在专用任务目录中运行并保留 Codex 的正常权限控制。先准备真实 `brief.txt`，检查输出，再修改材料重试。Chat Completions 的 `verify` 通过，不能替代这里的 Responses 实测。
-
-Magpie 自带的 Codex 集成还可管理模型目录和桌面应用配置；那是另一路线，应按当前 [Magpie Codex 文档](https://usemagpie.ai/docs/codex-models) 操作。已有线程可能保留原 provider，需要新会话核验。本仓库 CLI 启动器不承诺修改桌面模型菜单。
+`--dry-run` 只生成启动参数，不证明模型调用成功。CLI 成功也不代表桌面旧会话已切换。
 
 ## WorkBuddy
 
-先按已选网关确定路线：使用 Antigravity Manager 时，直接配置下文的自定义模型，无需另外安装 Magpie；使用 Magpie 时，可打开其 Agents 页面，使用当前版本的 WorkBuddy 行连接模型。Magpie 源码包含腾讯 WorkBuddy 与国际版 WorkBuddy AI 的独立 adapter；实际可用性仍取决于安装版本。
+在当前应用的自定义模型界面添加独立来源，填上面的完整 Chat Completions URL、真实模型 ID 和网关 API Key。若界面要求的是 Base URL，则只填到 `/v1`。按来源能力启用工具调用，在新任务中实际选中该模型。先备份，只添加所需项目，不覆盖整份配置。
 
-模型出现在 WorkBuddy 选择器后，重启必要的应用并在新任务里选中它。写入模型列表不等于当前任务已经切换。
-
-自定义模型路线：
+需要配置计划时：
 
 ```sh
-python3 scripts/agent_kit.py plan --client workbuddy --model "完整模型 ID" --output reports/workbuddy-plan-01.json
+python3 scripts/agent_kit.py plan --client workbuddy --base-url http://127.0.0.1:8787/v1 --model "完整模型 ID" --output reports/workbuddy-plan-01.json
 ```
 
-在当前应用的自定义模型界面核对这些字段，界面文字可能随版本变化：
+计划文件不含密钥，也不会代替点击保存。使用已有 Magpie 的用户也可沿用其 WorkBuddy adapter。若希望保留主模型，且 WorkBuddy 有已授权的本机文件工具，可以采用下面的文件桥外援路线。
 
-| 字段 | 填写方式 |
-| --- | --- |
-| API URL | Magpie 通常为 `http://127.0.0.1:3425/v1/chat/completions`；Manager 通常为 `http://127.0.0.1:8045/v1/chat/completions`；以实际监听地址为准 |
-| 模型名称／ID | 目录返回的完整 `id` |
-| API Key | 本机 Magpie 可用客户端标签；Manager 填其 API 网关密钥；远程网关用其真实密钥，均不填 Google Refresh Token |
-| 工具调用 | 来源和模型支持时启用，并用真实任务验证 |
+## Muse、GrokBot、豆包工作及其他工具型 Agent
 
-不要把 `chat/completions` 重复加两遍。若应用要求的是 Base URL 而不是完整 API URL，应按它的接口语义使用 `/v1`。
-
-单账号连续工具请求触发冷却时，可在同机启用[排队代理](PACED_PROXY.md)，将完整 URL 改成 `http://127.0.0.1:8046/v1/chat/completions`，仍使用同一个网关密钥。保存后在当前任务核对选中的完整模型 ID，并重新执行真实任务；配置已保存、代理健康检查通过，都不是任务成功。
-
-如果请求尚未发出就出现工作目录 `ENOENT`，先核对实际路径和访问权限。必要时在一个真实存在的简单英文目录中复验，以区分路径解析与上游模型问题，不据此推断所有中文目录都不支持。
-
-目前 Magpie adapter 的配置目标为 `~/.workbuddy/models.json`（可被 `WORKBUDDY_CONFIG_DIR` 覆盖）；国际版为 `~/.workbuddy-ai`。已有文件可能是数组或包含 `models` 的对象，不要直接用示例覆盖整份配置。实现参考：[workbuddy.go](https://github.com/yetone/magpie/blob/main/internal/agent/workbuddy.go)。
-
-### 保留 WorkBuddy 主模型，用 Gemini 作外援
-
-WorkBuddy 若能读写已授权的本机文件，也可使用[文件桥](FILE_BRIDGE.md)：当前主模型读取任务材料，将完整子任务写入专用队列，本机 worker 调用指定网关模型，再由 WorkBuddy 读取结果、检查并落地。这与自定义主模型是两条路线；`plan --client workbuddy` 的自定义模型配置不能代替文件桥部署。
-
-本次实测保留 Hy4 作宿主，委托 Gemini 写稿：一次真实请求 HTTP 200、94.759 秒，私有请求／结果哈希和保存的回包均匹配。Gemini 原稿加入了材料未提供的活动安排；宿主保留原稿，仅删去两段，并保存最终 192 字正文。最终稿约束通过，但须标注经过宿主事实编辑，不能称为未经修改的模型原稿。此前 WorkBuddy 直接选用 Gemini 的任务以 429 结束，仍单独记录；外援成功不证明主模型替换成功。订单任务与改变输入复验尚未完成。
-
-外援验收也要保留专用请求 ID、私有回执、原始回包和最终文件；共享文件中的 `success: true` 只有与私有回执哈希匹配后才构成调用证据。宿主编辑与额外模型调用分开统计，不把文件整理算成又一次 Gemini 成功请求。
-
-## DSH NEXT
-
-入口是 **设置 → 模型（Settings → Models）**，添加独立的自定义来源。以下入口按 DSH `2.0.22-next` 随包说明核对；让执行 Agent 先备份，再增加来源，保留原有模型与凭据。
-
-| 字段 | 配置示例 |
-| --- | --- |
-| 来源名称 | `Gemini Agent Kit` |
-| API 类型 | `openai-completions` |
-| Base URL | 已启用本机[排队代理](PACED_PROXY.md)时使用 `http://127.0.0.1:8046/v1`；其他情况填实际网关地址 |
-| 模型 ID | `gemini-4-argon-high`，必须先确认真实目录存在该完整 ID |
-| 凭据 | 在本机私有 credentials 中保存网关密钥，来源引用 `GEMINI_AGENT_GATEWAY_KEY`；不填 Google Refresh Token |
-| 自动重试 | `retryPolicy.maxRetries: 0`，不因限流自动追加请求 |
-
-保存来源不会切换当前模型。会话输入框旁的模型按钮，或 `/model` 命令，可打开按来源分组的菜单；找到 `Gemini Agent Kit → Gemini 4 Argon High`。**点击选择会更新 DSH 的全局默认模型**，测试结束若要保留原默认，请切回原来的 DeepSeek。
-
-本轮已在原生客户端确认菜单显示 `Gemini Agent Kit / Gemini 4 Argon High`。一次真实短测使用 `gemini-agent-kit/gemini-4-argon-high` 路由，请求到达上游但返回 `429 RESOURCE_EXHAUSTED`，完成 **0/1**；响应未给出具体 `Retry-After` 或配额类型，不据此判断恢复时间。等待恢复可用后，再执行真实文件任务并改变输入复验。界面与路由已确认，不代表主模型任务通过。
-
-## Muse / Grok Bot：工具接入
-
-这里提供的是 stdio MCP 工具 `ask_gemini`。宿主 Agent 负责规划、工具选择、权限和最终交付；Gemini 完成明确交给它的文字任务。
+支持相应连接器时，可用 `plan --client muse`、`grokbot`、`doubao` 或 `generic` 生成标准工具计划；选择器名称不代表已验证该产品所有版本。生成后按当前产品实际支持的入口配置：
 
 ```sh
-python3 scripts/agent_kit.py plan --client grokbot --model "完整模型 ID" --output reports/grokbot-plan-01.json
-python3 scripts/agent_kit.py plan --client muse --model "完整模型 ID" --output reports/muse-plan-01.json
+python3 scripts/agent_kit.py plan --client generic --base-url http://127.0.0.1:8787/v1 --model "完整模型 ID" --output reports/generic-plan-01.json
 ```
 
-在宿主实际运行环境放置仓库，并使用该环境的绝对路径。例如连接器若支持标准 `mcpServers` 配置，可以参考：
+### 能执行命令：直接交一个任务
+
+不必先装 MCP。让 Agent 把完整任务写进 UTF-8 的 `task.txt`，然后执行：
+
+```sh
+python3 scripts/agent_kit.py ask --base-url http://127.0.0.1:8787/v1 --model "完整模型 ID" --prompt-file task.txt --output reports/reply-01.json --max-tokens 1024
+```
+
+网关密钥通过私密环境变量 `GEMINI_AGENT_GATEWAY_KEY` 注入。命令只发起一次文字请求，不自动重试；结果保存为脱敏 JSON，包含 `text`、请求型号、上游自报型号及用量。终端只报告输出路径，Agent 再读取 `text` 完成后续任务。输出文件必须使用新名字，已有文件不会被覆盖。这里 Gemini 处理的是明确子任务，宿主仍负责读文件、执行工具和最终交付。
+
+### 有 stdio MCP 连接器
+
+在**连接器实际执行的环境**放置仓库，配置本仓库的 `ask_gemini`。以下为常见 `mcpServers` 格式；具体产品使用自己的配置界面或格式：
 
 ```json
 {
@@ -101,9 +102,9 @@ python3 scripts/agent_kit.py plan --client muse --model "完整模型 ID" --outp
     "gemini-agent-kit": {
       "command": "python3",
       "args": [
-        "/path/to/gemini-agent-kit/scripts/agent_kit.py",
+        "/absolute/path/to/gemini-agent-kit/scripts/agent_kit.py",
         "mcp",
-        "--base-url", "http://127.0.0.1:3425/v1",
+        "--base-url", "http://127.0.0.1:8787/v1",
         "--model", "目录中的完整模型 ID"
       ]
     }
@@ -111,30 +112,48 @@ python3 scripts/agent_kit.py plan --client muse --model "完整模型 ID" --outp
 }
 ```
 
-路径与型号是占位内容，需替换；具体产品未必使用这个外层 JSON。使用 `plan --runtime-script` 可以写入宿主上的实际脚本绝对路径。需要远程鉴权时，通过连接器的安全环境配置传入 `GEMINI_AGENT_GATEWAY_KEY`，不要把密钥写进公开配置。
+将脚本路径、解释器、型号替换为该环境的实际值；通过连接器的私密环境设置注入 `GEMINI_AGENT_GATEWAY_KEY`。连接后应能发现 `ask_gemini`，参数为 `prompt` 和可选 `max_tokens`。宿主读取材料、组织任务，把明确子任务交给 Gemini，再使用返回内容完成文件或答复。
 
-启动 stdio 服务后无普通终端输出属于正常情况，它等待 MCP 消息。客户端应先发现 `ask_gemini`，再调用一次，例如让它基于给定材料生成三个开头。工具参数为 `prompt` 和可选 `max_tokens`（1–8192，默认 1024）。
+只有 HTTP 远程 MCP 的产品不能直接运行这条 stdio 命令。本仓库没有 HTTP MCP 服务；不要把 OpenAI API URL 填进远程 MCP 地址框。
 
-只有 HTTP 远程 MCP 接口的产品，不能直接使用这个 stdio 命令；需要其支持的 command connector、同环境桥接或已有托管部署。本仓库没有实现 HTTP MCP 服务，不会自动创建公网入口。
+### 有设备文件工具，但没有本机 shell 或 MCP
 
-### Muse 只有设备文件工具时
+在 macOS / Linux 本机运行 [文件桥 worker](FILE_BRIDGE.md)，授权宿主访问专用队列。宿主写请求 JSON，worker 调用网关，宿主读结果并完成任务。启动 worker 需要本机执行能力；如果当前 Agent 没有，就交给用户本机另一个能执行命令的 Agent，不要声称云端已经启动成功。
 
-本轮所用的 Muse 桌面产品能读写已授权的 Mac 文件，但没有本机 shell、通用 HTTP 或本机 stdio MCP 工具入口。这种环境可以使用[本机文件桥接](FILE_BRIDGE.md)：Muse 将完整任务写入专用请求队列，本机 worker 调用已登录网关，再由 Muse 读取真实返回并保存成果。`plan --client muse` 本身不会启动这条文件路线。
+这条路线在历史 Muse 与 WorkBuddy 环境使用过，不代表所有同名产品均有设备文件权限。它保留宿主主模型；文件桥默认也不增加固定等待；只有明确需要时才设置额外间隔，不要再叠加排队代理。
 
-每个请求使用新 ID，保留原始请求、真实回包和实际产物。本机检查者将私有回执的请求／结果哈希与共享文件核对，不能仅凭共享 JSON 中的 `success: true` 判断。模型原稿若经过宿主排版或改写，应分别保存原稿与最终稿并说明改动。它证明的是 Muse 委托 Gemini 完成子任务，不证明 Muse 已更换主模型。
+### GrokBot 有自己的虚拟机
 
-### Grok Bot 虚拟机与聊天调度分开验收
+优先复用虚拟机中已有的 Pi / Magpie 或兼容网关；网关与调用工具在同一虚拟机时，可用该虚拟机的回环地址。先确认虚拟机内可调用，再让 GrokBot 聊天实际发起并收取子任务。前者不能替代后者，外层 GrokBot 的额度也不因增加 Gemini 工具而改变。
 
-若 Grok Bot 已有虚拟机中的 Pi／Magpie 工作流，先检查原配置和实际模型目录，保留其他 provider。也可在该虚拟机部署用户授权的 Manager，让 Pi 访问同一虚拟机的回环地址。由操作者在虚拟机终端启动 Pi 得到产物，只证明虚拟机内这条调用路径；还要由 Grok Bot 聊天实际发起并收取结果，才算宿主调度通过。
+### 豆包工作与其他尚未验收的产品
 
-外层 Grok Bot 的周额度与 Gemini 来源额度分别记录。虚拟机可用不等于聊天额度已恢复；不能把 Pi 在虚拟机完成的任务写成 Grok Bot 主模型已替换，或声称外层 Agent 可以无限使用。
+让执行 Agent 先查看自己实际可用的工具及当前产品设置：
 
-本轮 VM 的两次 Pi 写稿任务均收到上游 429，`message.stopReason=error`，未产生稿件文件，任务完成为 0/2。Pi 进程退出码虽然为 0，仍应判失败。两次任务之间的独立短探针收到 HTTP 200，却只返回 `task ready`，未完成要求的三个中文开头；只说明收到回复，不能算内容验收通过。外层 Grok Bot 周额度当时耗尽，宿主调度也未通过。该轮已停止追加请求，登录和模型目录截图只作配置证据。
+- 有自定义 OpenAI 模型入口：使用本页三个值配置独立来源。
+- 有命令执行工具：使用上面的 `ask` 单次命令；有 stdio MCP 则配置 `ask_gemini`。
+- 有已授权的设备文件工具：由本机启动文件桥后，按队列调用。
+- 只有聊天或远程 MCP，且无法访问已有鉴权网关：先把本机部署交给有执行能力的 Agent。说明还缺哪个入口，不虚构产品按钮或连接成功。
 
-### 同名 Muse 的区别
+仓库提供通用协议和执行指引，不能替一个封闭产品增加它没有开放的接口。豆包工作的具体版本支持情况和真实任务结果需由使用者所在环境确认。
 
-Magpie 源码中的 `muse` 是 **Meta Muse Code CLI**，不是所有名叫 Muse 的桌面或网页产品。它使用独立的 `~/.config/muse/settings.json` 与 `endpoint_transport`。不要因为看到 Magpie 有 Muse 行，就修改用户另一款 Muse 应用或宣称其主模型已更换。实现参考：[muse.go](https://github.com/yetone/magpie/blob/main/internal/agent/muse.go)。
+## DSH NEXT
 
-### 云端地址
+在 **设置 → 模型** 添加独立 OpenAI Chat Completions 来源。按 DSH `2.0.22-next` 的配置约定，API 类型为 `openai-completions`，Base URL 填 `http://127.0.0.1:8787/v1`；模型用实时目录完整 ID。网关密钥保存于本机私有 credentials，来源引用对应凭据，保留原模型与设置。
 
-云端 Agent 的 localhost 指向云端自身。只有网关也在同一环境时，示例回环地址才成立。否则使用已有的鉴权 HTTPS 网关，在安全环境中传入密钥。先在连接器环境运行 `doctor`，再调试客户端，避免把网络问题当模型问题。
+保存后在目标会话的模型菜单选中它。该版本选择模型会更新全局默认，事先记录原默认，用户要求临时测试时在结束后切回。不要把某个示例型号或原来的默认模型写死到其他人的配置中。
+
+## 云端与本机的位置
+
+云端 Agent 的 `localhost` 指向云端自身，不能直接访问用户电脑的 `127.0.0.1:8787`。最简选择是让网关和调用工具运行在同一环境；也可以使用用户已有的鉴权 HTTPS 网关，或明确支持的设备文件桥。不要为了演示直接暴露本机管理面板到公网。
+
+## 历史记录与版本差异
+
+以下是特定环境的历史测试，**不是新用户安装步骤，也不是当前产品能力保证**。完整次数、失败原因与产物范围见 [STATUS](STATUS.md)。
+
+- WorkBuddy 的 Hy4 宿主曾通过文件桥调用 Gemini 一次：HTTP 200，94.759 秒；宿主保留原稿，删除两段材料没有提供的活动安排，得到 192 字正文。主模型直连的另一轮返回 429，不能把外援通过算成主模型替换通过。
+- Muse 设备文件路线曾产生写稿、订单整理成果；宿主仍负责调度与文件落地。Magpie 的 `muse` adapter 是 **Meta Muse Code CLI**，不是所有 Muse 桌面或网页产品，不应据此修改另一款应用。
+- DSH 一轮短测界面与路由已确认，但收到 `429 RESOURCE_EXHAUSTED`，完成 0/1；并无可确认的恢复时间。
+- GrokBot 历史虚拟机两次 Pi 写稿均返回 429，完成 0/2；短探针 HTTP 200 但未满足内容要求，外层聊天当时额度耗尽。用户之后自行修复的配置不在这轮记录内，不能用旧结果判断其现在不可用。
+
+新部署以新用户的实际来源、型号、任务和结果为准。面板默认不添加固定请求间隔；上游限流仍按真实提示处理，不能把一次短测写成无限额度或长期稳定证明。

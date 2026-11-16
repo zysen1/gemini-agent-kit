@@ -297,6 +297,7 @@ def make_plan(gateway: Gateway, model: str, client: str, runtime_script: str | N
         plan["mcp_server"] = {"command": "python3", "args": mcp_args,
                               "required_environment_variable_names": [KEY_ENV] if gateway.key != LOCAL_CLIENT_LABEL else []}
         plan["tool"] = "ask_gemini"
+        plan["capability_requirement"] = "Confirm that this agent supports local commands or stdio MCP before applying; a product name alone does not establish support."
         plan["next_action"] = "Copy this repository to the agent's runtime. Configure a private command/MCP connector using its supported UI and secure credential mechanism."
         plan["host_boundary"] = "A cloud computer cannot use your Mac's localhost. Run the gateway in the connector's environment, or supply its authenticated HTTPS endpoint."
         plan["limitation"] = "The original agent still plans and controls permissions. Adding a Gemini tool does not replace its main model."
@@ -474,13 +475,16 @@ def main(argv=None):
     parser.add_argument("--version", action="version", version=VERSION)
     add_common(parser)
     subs = parser.add_subparsers(dest="command", required=True)
-    for command in ("doctor", "models", "plan", "verify", "mcp", "launch-codex"):
+    for command in ("doctor", "models", "plan", "verify", "ask", "mcp", "launch-codex"):
         sub = subs.add_parser(command)
         add_common(sub, suppress=True)
-        if command in ("plan", "verify"):
+        if command in ("plan", "verify", "ask"):
             sub.add_argument("--output", required=True, help="New JSON report path; existing files are not overwritten")
+        if command == "ask":
+            sub.add_argument("--prompt-file", type=Path, required=True, help="UTF-8 task file, at most 64000 characters")
+            sub.add_argument("--max-tokens", type=int, default=1024, help="Output token limit, 1 to 8192")
         if command == "plan":
-            sub.add_argument("--client", required=True, choices=("codex", "workbuddy", "muse", "grokbot"))
+            sub.add_argument("--client", required=True, choices=("codex", "workbuddy", "muse", "grokbot", "doubao", "generic"))
             sub.add_argument("--runtime-script", help="Absolute script path on the connector's own runtime")
         if command == "launch-codex":
             sub.add_argument("--dry-run", action="store_true", help="Print a credential-free argv plan instead of launching")
@@ -488,8 +492,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     key = os.environ.get(KEY_ENV, "")
     try:
-        if args.command in ("plan", "verify"):
+        if args.command in ("plan", "verify", "ask"):
             check_new_output(args.output)
+        if args.command == "ask":
+            try:
+                with args.prompt_file.open(encoding="utf-8") as prompt_file:
+                    prompt = prompt_file.read(64001)
+            except UnicodeDecodeError:
+                raise KitError("INVALID_PROMPT", "The task file must use UTF-8.") from None
+            if not prompt.strip() or len(prompt) > 64000 or not 1 <= args.max_tokens <= 8192:
+                raise KitError("INVALID_PROMPT", "Provide a nonempty UTF-8 task of at most 64000 characters and max-tokens from 1 to 8192.")
         gateway = Gateway(args.base_url, args.timeout, args.allow_insecure_http)
         if args.command == "mcp":
             mcp_serve(gateway, args.model)
@@ -503,6 +515,16 @@ def main(argv=None):
             print(json.dumps(redact({"gateway": gateway.base_url, "models": catalog}, gateway.key), ensure_ascii=False, indent=2))
             return 0
         model = select_model(catalog, args.model)
+        if args.command == "ask":
+            reply = gateway.chat(model, [{"role": "user", "content": prompt}], max_tokens=args.max_tokens)
+            text = text_of(message_of(reply))
+            if not text.strip():
+                raise KitError("EMPTY_REPLY", "The gateway returned no text. No output file was saved and no retry was attempted.")
+            path = save_json(args.output, {"text": text, "requested_model": model,
+                "provider_reported_model": reply.get("model"), "usage": reply.get("usage"),
+                "finish_reason": reply["choices"][0].get("finish_reason")}, gateway.key)
+            print(json.dumps({"status": "reply_saved", "path": path, "model": model}, ensure_ascii=False))
+            return 0
         if args.command == "plan":
             plan = make_plan(gateway, model, args.client, args.runtime_script)
             path = save_json(args.output, plan, gateway.key)

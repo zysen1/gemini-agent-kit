@@ -38,7 +38,7 @@ class FileBridgeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.queue = Path(self.temp.name) / 'relay'
         self.gateway = FakeGateway()
-        self.worker = bridge.Worker(self.queue, self.gateway, min_interval=0, stable_seconds=0)
+        self.worker = bridge.Worker(self.queue, self.gateway, stable_seconds=0)
 
     def tearDown(self):
         self.temp.cleanup()

@@ -22,7 +22,7 @@
     "/api/accounts/refresh": "刷新账号信息",
     "/api/accounts/remove": "移除账号",
     "/api/models/select": "选择模型",
-    "/api/check": "检查模型并准备配置",
+    "/api/check": "测试模型连接",
     "/api/codex/preview": "生成配置预览",
     "/api/codex/apply": "添加 Codex 配置",
     "/api/codex/restore": "恢复 Codex 配置"
@@ -83,9 +83,10 @@
   }
 
   function updateButtons() {
-    const ready = Boolean(snapshot && csrfToken && !busy);
+    const ready = Boolean(snapshot && csrfToken && !busy && !refreshing);
     const running = runtimeRunning();
     const hasModel = Boolean(modelValue());
+    const savedModel = hasModel && modelValue() === snapshot?.selected_model;
     const runtime = snapshot?.runtime || {};
     const proxyNeedsStart = running && runtime.proxy_running === false && snapshot?.accounts?.length > 0;
     $("setup-runtime").disabled = !ready || (running && !proxyNeedsStart);
@@ -99,7 +100,9 @@
     $("preview-codex").disabled = !ready || !hasModel;
     $("apply-codex").disabled = !ready || !hasModel || previewModel !== modelValue() || !previewHashKnown;
     $("restore-codex").disabled = !ready || !snapshot?.codex?.configured;
-    $("copy-connection").disabled = !snapshot?.api?.base_url || !snapshot?.selected_model;
+    $("copy-connection").disabled = !ready || !snapshot?.api?.base_url || !savedModel;
+    if (snapshot) badge("api-badge", savedModel ? "接入信息已准备" : hasModel ? "型号尚未保存" : "等待选择模型", savedModel ? "success" : hasModel ? "warning" : "neutral");
+    $("copy-api-key").disabled = !ready || !snapshot?.api?.key_present;
     document.querySelectorAll(".account-mutation").forEach((button) => { button.disabled = !ready || !running; });
   }
 
@@ -211,15 +214,14 @@
     $("account-count").textContent = `${accounts.length} 个`;
     renderAccounts(accounts);
     const selected = snapshot.selected_model || "";
-    const previous = $("model-select").value;
     const select = $("model-select"); select.replaceChildren();
     const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = models.length ? "请选择一个完整型号" : "先连接账号，再读取模型"; select.append(placeholder);
     models.forEach((model) => {
       if (!model || typeof model.id !== "string" || !model.id) return;
       const option = document.createElement("option"); option.value = model.id; option.textContent = model.id; select.append(option);
     });
-    select.value = models.some((item) => item.id === previous) ? previous : selected;
-    if (!select.value && selected) select.value = selected;
+    // Every selection is saved immediately; refreshed server state is authoritative.
+    select.value = selected;
     const currentCheck = check && check.model === selected;
     const passed = currentCheck && check.passed === true;
     $("check-result").hidden = !check;
@@ -229,15 +231,16 @@
       if (check.http_status) lines.push(`HTTP 状态：${safeText(check.http_status)}`);
       if (check.summary) lines.push(safeText(check.summary));
       if (!currentCheck) lines.push("此记录对应之前的型号；请检查当前选中的模型。");
-      lines.push("短请求通过不等于 Codex 桌面任务已通过。");
+      lines.push("短请求通过后，请在目标 Agent 中完成一次实际任务。");
       $("check-result").textContent = lines.join("\n");
       $("check-result").className = `result-box${passed ? "" : " warning"}`;
     }
+    badge("api-badge", selected ? "接入信息已准备" : "等待选择模型", selected ? "success" : "neutral");
     badge("codex-badge", codex.desktop_verified ? "桌面任务已核对" : codex.configured ? "已配置 · 待实测" : "尚未配置", codex.desktop_verified ? "success" : codex.configured ? "warning" : "neutral");
     $("codex-detail").textContent = codex.desktop_verified ? "已记录桌面端实际任务结果。保留该任务的真实产物与验证记录。" : codex.configured ? "配置已添加。重启客户端，在设置的网关中启用 Gemini Agent Kit，再新建会话做真实任务。" : "选择模型后生成配置预览。";
     $("api-address").textContent = safeText(snapshot.api?.base_url, "等待服务启动");
     $("api-model").textContent = safeText(selected, "尚未选择");
-    $("api-key-state").textContent = snapshot.api?.key_present ? "已配置（内容不展示）" : "尚未配置";
+    $("api-key-state").textContent = snapshot.api?.key_present ? "已生成 · 点击下方按钮复制" : "尚未配置";
     $("notice").hidden = !snapshot.notice;
     $("notice").textContent = safeText(snapshot.notice);
     updateButtons();
@@ -307,8 +310,7 @@
       if (path === "/api/check") {
         await refreshState();
         if (snapshot.last_check?.passed === true && snapshot.last_check.model === payload.model) {
-          showPreview(await request("/api/codex/preview", { model: payload.model }), payload.model);
-          successMessage = "短请求已通过。查看配置后，点击“确认接入 Codex”。";
+          successMessage = "短请求已通过，可以把接入信息填入目标 Agent。";
         }
       }
       if (path === "/api/codex/apply" || path === "/api/codex/restore") {
@@ -344,7 +346,12 @@
     if (!token) return;
     mutate("/api/accounts", { refresh_token: token }, $("import-account"), "账号已导入。请核对显示的权益和模型权限。");
   });
-  $("model-select").addEventListener("change", () => { previewModel = null; previewHash = null; previewHashKnown = false; $("config-preview").hidden = true; $("config-review").hidden = true; updateButtons(); });
+  $("model-select").addEventListener("change", (event) => {
+    previewModel = null; previewHash = null; previewHashKnown = false;
+    $("config-preview").hidden = true; $("config-review").hidden = true;
+    if (modelValue()) mutate("/api/models/select", { model: modelValue() }, event.currentTarget, "模型已保存。复制接入信息，再填写到目标 Agent。");
+    else updateButtons();
+  });
   $("check-model").addEventListener("click", (event) => mutate("/api/check", { model: modelValue() }, event.currentTarget, "检查已结束，请查看本轮结果。"));
   $("preview-codex").addEventListener("click", (event) => mutate("/api/codex/preview", { model: modelValue() }, event.currentTarget, "预览已生成。确认后再添加配置。"));
   $("apply-codex").addEventListener("click", (event) => {
@@ -356,9 +363,30 @@
     mutate("/api/codex/restore", {}, event.currentTarget, "恢复操作已完成，请重新打开 Codex 核对。");
   });
   $("copy-connection").addEventListener("click", async () => {
-    const text = `API 地址：${snapshot?.api?.base_url || ""}\n模型：${snapshot?.selected_model || ""}\n访问凭据由本机凭据助手处理；此文本不包含密钥。`;
-    try { await navigator.clipboard.writeText(text); feedback("已复制地址与型号，没有复制密钥。", "success"); }
+    if (busy || refreshing || !csrfToken || !snapshot?.api?.base_url || !snapshot?.selected_model || modelValue() !== snapshot.selected_model) {
+      feedback("当前型号尚未保存或状态未确认，请刷新后再复制。", "info");
+      return;
+    }
+    const text = `接口类型：OpenAI 兼容\nBase URL：${snapshot?.api?.base_url || ""}\nModel ID：${snapshot?.selected_model || ""}\nAPI Key：请在本机面板点击“复制 API Key”，直接粘进客户端设置。\n请只给我指定的 Agent 添加此服务，保留已有来源和默认设置。此地址仅供同一台电脑使用。`;
+    try { await navigator.clipboard.writeText(text); feedback("已复制接入信息。API Key 请单独复制到目标客户端。", "success"); }
     catch (_) { feedback("浏览器未允许复制。可以在上方选中地址和型号手动复制。", "info"); }
+  });
+  $("show-codex-options").addEventListener("click", () => { $("advanced").open = true; });
+  $("copy-api-key").addEventListener("click", async (event) => {
+    if (busy || !csrfToken) return;
+    const button = event.currentTarget;
+    busy = true; button.setAttribute("aria-busy", "true"); updateButtons();
+    try {
+      // Fetch a credential only after this explicit click. Never render or log it.
+      const connection = await request("/api/connection", {});
+      if (typeof connection.api_key !== "string" || !connection.api_key) throw new Error("missing key");
+      await navigator.clipboard.writeText(connection.api_key);
+      feedback("API Key 已复制。请直接粘进目标客户端的密钥框，不要发进聊天。", "success");
+    } catch (_) {
+      feedback("未能复制 API Key。请让本机 Agent 从本工具的私有状态文件读取并填写客户端；不要把密钥发进聊天。", "info");
+    } finally {
+      busy = false; button.removeAttribute("aria-busy"); updateButtons();
+    }
   });
   window.addEventListener("pagehide", () => { $("refresh-token").value = ""; csrfToken = ""; });
   refreshState().catch(() => {});

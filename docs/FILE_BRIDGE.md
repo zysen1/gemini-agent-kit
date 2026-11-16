@@ -22,7 +22,7 @@ python3 scripts/file_bridge.py \
   --model gemini-4-argon-high
 ```
 
-将 `/Users/yourname` 换成真实用户目录。`--receipt-dir` 必须在共享队列之外，不授权云端 Agent 读取或写入；这里存放本机回执、ID 占用记录、冷却和进程锁。worker 会创建 `requests`、`results`、`processed`，终端输出 `worker: ready`。同一队列只运行一个 worker；默认请求结束后至少间隔 35 秒。
+将 `/Users/yourname` 换成真实用户目录。`--receipt-dir` 必须在共享队列之外，不授权云端 Agent 读取或写入；这里存放本机回执、ID 占用记录、冷却和进程锁。worker 会创建 `requests`、`results`、`processed`，终端输出 `worker: ready`。同一队列只运行一个 worker；默认不加固定等待，仍遵守上游返回的冷却时间。需要额外间隔时再传 `--min-interval 秒数`。
 
 脚本仅接受回环网关，要求非空网关密钥；它不会读取任何产品凭据或替你登录。鉴权请求禁止重定向，也不经过环境 HTTP 代理。
 

@@ -92,7 +92,7 @@ def safe_model_header(value):
 
 
 class KitCore:
-    def __init__(self, data_dir, port=8787, manager_config=None, inference_origin=None, interval=120):
+    def __init__(self, data_dir, port=8787, manager_config=None, inference_origin=None, interval=0):
         from manager_runtime import ManagerRuntime
         self.data_dir = Path(data_dir).expanduser().absolute()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -283,6 +283,12 @@ class KitCore:
         if not self.mutation_lock.acquire(blocking=False):
             raise AppError("BUSY", "上一步正在处理，请稍等。", 409)
         try:
+            if path == "/api/connection":
+                # Explicit same-origin, session + CSRF protected action only.
+                # Never include this credential in the polling snapshot or logs.
+                return {"base_url": self.origin + "/v1",
+                        "model": self.state.get("selected_model"),
+                        "api_key": self.state["gateway_key"]}
             if path == "/api/runtime/setup":
                 return {"runtime": self.snapshot()["runtime"]} if self.manager_config else self.runtime.setup()
             if path == "/api/runtime/start":
