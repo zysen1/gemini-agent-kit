@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import stat
 import sys
 import tempfile
@@ -43,7 +44,11 @@ class UpstreamHandler(BaseHTTPRequestHandler):
 
     def send_bytes(self, status, raw, headers=None):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        content_type = "application/json"
+        if self.server.mode == "private_success_headers":
+            content_type += "; charset=utf-8; debug=" + ADMIN_KEY
+            self.send_header("Set-Cookie", "session=" + ADMIN_KEY)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
         for key, value in (headers or {}).items():
             self.send_header(key, value)
@@ -293,6 +298,44 @@ class KitAppTests(unittest.TestCase):
         self.assertEqual(status, 411)
         self.assertEqual(json.loads(raw)["error"]["code"], "BAD_LENGTH")
 
+    def test_incomplete_request_body_times_out_without_upstream_access(self):
+        headers = self.headers(admin=True)
+        lines = ["POST /api/check HTTP/1.1", "Host: 127.0.0.1:" + str(self.server.server_port),
+                 "Content-Length: 100", *(key + ": " + value for key, value in headers.items())]
+        with mock.patch.object(app.Handler, "timeout", 0.05):
+            with socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2) as client:
+                client.sendall(("\r\n".join(lines) + "\r\n\r\n{").encode())
+                response = http.client.HTTPResponse(client)
+                response.begin()
+                self.assertEqual(response.status, 408)
+                self.assertEqual(json.loads(response.read())["error"]["code"], "REQUEST_TIMEOUT")
+        self.assertEqual(self.upstream.calls, [])
+        self.assertEqual(self.admin("/api/state")[0], 200)
+
+    def test_snapshot_never_reads_other_client_configuration(self):
+        with mock.patch.object(Path, "home", side_effect=AssertionError("No cross-client home lookup")):
+            status, _, raw = self.admin("/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["codex"], {"restore_available": False, "desktop_verified": False})
+        self.core.state["last_codex_receipt"] = "/fixture/private/owned.receipt.json"
+        with mock.patch.object(Path, "home", side_effect=AssertionError("No cross-client home lookup")):
+            status, _, raw = self.admin("/api/state")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(raw)["codex"]["restore_available"])
+        self.assertNotIn("owned.receipt.json", raw.decode())
+
+    def test_hostile_json_is_rejected_without_upstream_request(self):
+        deep = b'{"input":' + b'[' * 15000 + b'0' + b']' * 15000 + b'}'
+        for raw in (deep, b'{"temperature": NaN}', b'{"temperature": 1e309}'):
+            for route, headers in (("/api/check", self.headers(admin=True)),
+                                   ("/v1/responses", self.headers(gateway=True))):
+                with self.subTest(route=route, size=len(raw)):
+                    status, _, response = self.request(route, method="POST", raw=raw, headers=headers)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(json.loads(response)["error"]["code"], "BAD_JSON")
+        self.assertEqual(self.upstream.calls, [])
+        self.assertEqual(self.admin("/api/state")[0], 200)
+
     def test_snapshot_redacts_accounts_and_uses_separate_upstream_credentials(self):
         status, _, raw = self.admin("/api/state")
         self.assertEqual(status, 200)
@@ -419,6 +462,17 @@ class KitAppTests(unittest.TestCase):
         self.assertEqual(self.gateway("/v1/responses", payload)[0], 200)
         self.assertAlmostEqual(sum(sleeps), 4.0)
         self.assertEqual(len(self.posts()), 4, "upstream errors must not be retried automatically")
+
+    def test_success_headers_do_not_expose_private_parameters_or_cookies(self):
+        self.upstream.mode = "private_success_headers"
+        status, headers, raw = self.gateway("/v1/responses", {"model": MODEL, "input": "fixture"})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertNotIn("Set-Cookie", headers)
+        self.assertEqual(headers["X-Upstream-Model"], MODEL)
+        self.assert_no_private_values(headers)
+        self.assertEqual(json.loads(raw)["status"], "completed")
 
     def test_upstream_redirect_not_followed_and_location_not_exposed(self):
         self.upstream.mode = "redirect"

@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -151,6 +153,42 @@ class TestKit(unittest.TestCase):
         self.assertNotIn(Fixture.secret, str(raised.exception))
         self.assertIn("401", str(raised.exception))
 
+    def test_upstream_diagnostics_never_escape_http_or_json_errors(self):
+        secret = "synthetic-upstream-secret-not-the-gateway-key"
+        bodies = (json.dumps({"error": {"access_token": secret, "refresh_token": secret,
+                                      "api_key": secret, "message": secret}}).encode(),
+                  ("private account diagnostic: " + secret).encode())
+        for body in bodies:
+            with self.subTest(body_type=body[:1]):
+                error = urllib.error.HTTPError(self.url, 429, secret, {}, io.BytesIO(body))
+                with mock.patch.object(self.gateway.opener, "open", side_effect=error):
+                    with self.assertRaises(kit.KitError) as raised:
+                        self.gateway.models()
+                self.assertEqual(raised.exception.code, "HTTP_ERROR")
+                self.assertIn("429", str(raised.exception))
+                self.assertNotIn(secret, str(raised.exception))
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = bodies[0]
+        with mock.patch.object(self.gateway.opener, "open", return_value=response):
+            with self.assertRaises(kit.KitError) as raised:
+                self.gateway.models()
+        self.assertEqual(raised.exception.code, "UPSTREAM_ERROR")
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_hostile_upstream_json_is_a_controlled_error(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        for raw in (b'[' * 15000 + b'0' + b']' * 15000,
+                    b'{"usage":{"total_tokens":NaN}}',
+                    b'{"usage":{"total_tokens":1e309}}',
+                    b'{"usage":{"total_tokens":-1e309}}'):
+            response.read.return_value = raw
+            with self.subTest(size=len(raw)), mock.patch.object(self.gateway.opener, "open", return_value=response):
+                with self.assertRaises(kit.KitError) as raised:
+                    self.gateway.models()
+                self.assertEqual(raised.exception.code, "INVALID_RESPONSE")
+
     def test_live_probe_protocol_fixture_round_trip(self):
         report = kit.verify(self.gateway, Fixture.models[0])
         self.assertTrue(report["passed"])
@@ -231,6 +269,34 @@ class TestKit(unittest.TestCase):
         actual=[json.loads(x) for x in out.getvalue().splitlines()]
         self.assertEqual(actual[0]["error"]["code"],-32700)
         self.assertEqual(actual[-1]["error"]["code"],-32602)
+        self.assertFalse(self.fixture.calls)
+
+    def test_mcp_continues_after_deep_json_and_invalid_request_id(self):
+        malformed = '[' * 15000 + '0' + ']' * 15000
+        incoming = [
+            {"jsonrpc": "2.0", "id": {"unexpected": "object"}, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        ]
+        out = io.StringIO()
+        kit.mcp_serve(self.gateway, None,
+                      io.StringIO(malformed + '\n' + '\n'.join(json.dumps(x) for x in incoming) + '\n'), out)
+        replies = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual(replies[0]["error"]["code"], -32700)
+        self.assertEqual(replies[1]["error"]["code"], -32600)
+        self.assertEqual(replies[2]["id"], 1)
+        self.assertEqual(replies[3], {"jsonrpc": "2.0", "id": 2, "result": {}})
+        self.assertFalse(self.fixture.calls)
+
+    def test_mcp_rejects_exponent_overflow_and_continues(self):
+        incoming = ('{"jsonrpc":"2.0","id":1,"method":"ping","params":{"value":1e309}}\n'
+                    '{"jsonrpc":"2.0","id":2,"method":"ping","params":{"value":-1e309}}\n'
+                    '{"jsonrpc":"2.0","id":3,"method":"ping"}\n')
+        out = io.StringIO()
+        kit.mcp_serve(self.gateway, None, io.StringIO(incoming), out)
+        replies = [json.loads(line) for line in out.getvalue().splitlines()]
+        self.assertEqual([reply["error"]["code"] for reply in replies[:2]], [-32700, -32700])
+        self.assertEqual(replies[2], {"jsonrpc": "2.0", "id": 3, "result": {}})
         self.assertFalse(self.fixture.calls)
 
     def test_codex_argv_never_contains_token_or_edits_config(self):

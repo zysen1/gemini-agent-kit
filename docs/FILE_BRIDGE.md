@@ -10,7 +10,7 @@
 
 ## 在 Mac 启动
 
-先按 [Manager 指南](ANTIGRAVITY_MANAGER.md) 登录、启动网关并完成一次真实验收。从当前模型目录复制精确 ID。网关凭据通过执行环境 `GEMINI_AGENT_GATEWAY_KEY` 注入；不要写进命令参数、聊天、请求 JSON、截图或 Git。
+优先复用已有授权网关；没有来源时按[本机面板](LOCAL_PANEL.md)准备，账号由本人本地录入。从当前模型目录复制精确 ID，用户要求真实任务时再调用。网关凭据通过执行环境 `GEMINI_AGENT_GATEWAY_KEY` 注入；不要写进命令参数、聊天、请求 JSON、截图或 Git。
 
 在仓库目录执行（示例目录为独立英文路径）：
 
@@ -19,7 +19,7 @@ python3 scripts/file_bridge.py \
   --queue /Users/yourname/gemini-muse-relay \
   --receipt-dir /Users/yourname/Library/Application\ Support/GeminiBridge/private-receipts \
   --base-url http://127.0.0.1:8045/v1 \
-  --model gemini-4-argon-high
+  --model "目录中的完整模型 ID"
 ```
 
 将 `/Users/yourname` 换成真实用户目录。`--receipt-dir` 必须在共享队列之外，不授权云端 Agent 读取或写入；这里存放本机回执、ID 占用记录、冷却和进程锁。worker 会创建 `requests`、`results`、`processed`，终端输出 `worker: ready`。同一队列只运行一个 worker；默认不加固定等待，仍遵守上游返回的冷却时间。需要额外间隔时再传 `--min-interval 秒数`。

@@ -6,7 +6,7 @@
 用户授权的账号 → Antigravity Manager → 本地兼容 API → 客户端
 ```
 
-这里的 Manager 是 [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)，应用名为 Antigravity Tools，是第三方项目。本页原有导入、隔离和路由说明的源码依据为 `v5.0.0`；另在下文单独记录 `v5.0.3` 的超时策略与本机升级结果。**不承诺安装后会一直停留在某个版本**；操作时以实际运行版本为准，升级后重新检查界面和行为。
+这里的 Manager 是 [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)，应用名为 Antigravity Tools，是第三方项目。本页说明用户自行管理的独立 Manager，并保留 `v5.0.0` 源码依据及 `v5.0.3` 历史验收记录；新手默认安装请用[本机面板](LOCAL_PANEL.md)的固定版本流程。自行管理的应用可能自动升级，操作时以实际运行版本为准；不要将本页历史流程当成 Kit 自动安装器的行为。
 
 ## 1. 安装项目发布版
 
@@ -16,7 +16,7 @@
 - Intel Mac：选择该版本的 x64 包。
 - Windows / Linux：选择当前系统对应的发布包，按项目安装说明安装。
 
-核对项目来源及可用的签名／校验信息。不要为完成安装关闭系统安全功能。已安装且版本合适时直接复用，不重复安装。
+核对项目来源及可用的签名／校验信息，不为完成安装关闭系统安全功能。用户已经运行并授权的网关可按实际地址复用；仅版本相符不能证明 `.app` 可信，也不授权 Agent 扫描并执行未验证的应用。Kit 的 Mac / Linux 自动准备流程使用固定摘要发布包及缓存完整性记录，Windows 仍为用户手工安装。
 
 ### 记录运行版本，别只看安装包名称
 
@@ -32,7 +32,7 @@ v5.0.0 的更新组件在检测到更新后会调用 `downloadAndInstall`，完�
 
 Manager 默认数据目录是 `~/.antigravity_tools`，其中包含私有账号资料。环境变量 `ABV_DATA_DIR` 可指定独立目录；在**应用新进程启动之前**设置。
 
-Mac 示例，应用实际安装路径不同则调整 `manager_app`：
+以下 Mac 示例仅适用于用户已核实来源、明确选择的自管应用，不是 Kit 的默认安装路线；应用实际路径不同则调整 `manager_app`：
 
 ```sh
 manager_app="/Applications/Antigravity Tools.app"
@@ -51,10 +51,10 @@ Manager 使用单实例机制。已有应用正在运行时，应等现有任务
 
 ## 3. 在应用原生界面导入
 
-前提是用户主动提供自己可使用账号的 Refresh Token，并明确授权导入。无需再次索要 Google AI Studio Key。
+由账号本人在自己管理的电脑录入其授权账号；不向 Agent 聊天提供 Refresh Token，也不向云端虚拟机导入主账号长期 Token。已有登录网关无需重新导入或索要 Google AI Studio Key。
 
 1. 打开 **账号管理 → 添加账号 → Refresh Token**。
-2. 用户在该界面直接粘贴；若用户已经明确授权 Agent 使用其提供的 Token，Agent 可定向填入这个输入框，不向聊天回显、不另写临时文件。
+2. 用户在该本机界面直接粘贴，不把 Token 发到聊天或临时文件。
 3. 点确认添加，等待应用读取身份和额度。导入后遮挡账号标识再采集截图。
 4. 检查账号状态、订阅层级和模型目录；“已添加”不等于模型推理已经通过。
 
@@ -124,7 +124,7 @@ python3 scripts/agent_kit.py plan --client workbuddy --base-url http://127.0.0.1
 
 按[客户端指南](CLIENTS.md)建立命令或 stdio MCP 连接器，把同样的网关地址、精确模型 ID 和私密网关凭据传入。通用路线仍是 `ask_gemini` 外部工具，不能据此宣称已替换产品主模型。
 
-云端 Agent 不能访问用户 Mac 的 `127.0.0.1`。需要同环境网关或已有的鉴权 HTTPS 网关；不要为了连通直接开放 Manager 管理端口。此仓库不自带 HTTP MCP 服务。
+云端 Agent 不能访问用户 Mac 的 `127.0.0.1`。优先复用已有授权网关，没有来源则交接本机准备；不要向云端 Agent 提供主账号长期 Token，也不要为了连通直接开放 Manager 管理端口。此仓库不自带 HTTP MCP 服务。
 
 ## 7. 单账号限流按冷却处理
 

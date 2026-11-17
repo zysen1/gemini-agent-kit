@@ -99,7 +99,7 @@
     $("check-model").disabled = !ready || !running || !hasModel;
     $("preview-codex").disabled = !ready || !hasModel;
     $("apply-codex").disabled = !ready || !hasModel || previewModel !== modelValue() || !previewHashKnown;
-    $("restore-codex").disabled = !ready || !snapshot?.codex?.configured;
+    $("restore-codex").disabled = !ready || !snapshot?.codex?.restore_available;
     $("copy-connection").disabled = !ready || !snapshot?.api?.base_url || !savedModel;
     if (snapshot) badge("api-badge", savedModel ? "接入信息已准备" : hasModel ? "型号尚未保存" : "等待选择模型", savedModel ? "success" : hasModel ? "warning" : "neutral");
     $("copy-api-key").disabled = !ready || !snapshot?.api?.key_present;
@@ -155,7 +155,7 @@
       ? runtime.download_url : runtimeReleaseUrl;
     $("runtime-install-link").href = downloadUrl;
     $("runtime-install-link").textContent = downloadUrl === runtimeWindowsUrl
-      ? "下载 Windows 安装包（v5.0.3）↗" : "打开官方下载（v5.0.3）↗";
+      ? "下载上游 Windows 安装包（v5.0.3）↗" : "打开上游发布页（v5.0.3）↗";
   }
 
   function renderAccounts(accounts) {
@@ -236,8 +236,8 @@
       $("check-result").className = `result-box${passed ? "" : " warning"}`;
     }
     badge("api-badge", selected ? "接入信息已准备" : "等待选择模型", selected ? "success" : "neutral");
-    badge("codex-badge", codex.desktop_verified ? "桌面任务已核对" : codex.configured ? "已配置 · 待实测" : "尚未配置", codex.desktop_verified ? "success" : codex.configured ? "warning" : "neutral");
-    $("codex-detail").textContent = codex.desktop_verified ? "已记录桌面端实际任务结果。保留该任务的真实产物与验证记录。" : codex.configured ? "配置已添加。重启客户端，在设置的网关中启用 Gemini Agent Kit，再新建会话做真实任务。" : "选择模型后生成配置预览。";
+    badge("codex-badge", codex.desktop_verified ? "桌面任务已核对" : codex.restore_available ? "有本面板配置记录 · 待核对" : "可选接入 · 未读取配置", codex.desktop_verified ? "success" : codex.restore_available ? "warning" : "neutral");
+    $("codex-detail").textContent = codex.desktop_verified ? "已记录桌面端实际任务结果。保留该任务的真实产物与验证记录。" : codex.restore_available ? "保留了本面板的配置恢复记录；当前配置未自动读取。请在客户端核对接入并完成实际任务。" : "仅在你选择预览、添加或恢复时访问 Codex 配置。选择模型后可生成配置预览。";
     $("api-address").textContent = safeText(snapshot.api?.base_url, "等待服务启动");
     $("api-model").textContent = safeText(selected, "尚未选择");
     $("api-key-state").textContent = snapshot.api?.key_present ? "已生成 · 点击下方按钮复制" : "尚未配置";

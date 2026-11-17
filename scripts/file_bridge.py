@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import email.utils
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -22,10 +23,11 @@ import urllib.error
 import urllib.request
 import uuid
 
-from agent_kit import KEY_ENV, KitError, NoRedirect, normalize_url, redact
+from agent_kit import KEY_ENV, KitError, NoRedirect, bounded_json_loads, normalize_url, redact
 
 MAX_REQUEST_BYTES = 65536
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_COOLDOWN_TIMESTAMP = 253402300799  # Last full second of datetime year 9999.
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
@@ -47,7 +49,7 @@ def scrub(value, key=""):
 def request_document(raw: bytes, request_id: str, key: str = "") -> dict:
     if len(raw) > MAX_REQUEST_BYTES:
         raise ValueError("Request exceeds 64 KiB.")
-    obj = json.loads(raw)
+    obj = bounded_json_loads(raw)
     if not isinstance(obj, dict) or set(obj) != {"id", "prompt", "max_tokens"}:
         raise ValueError("Expected exactly id, prompt and max_tokens fields.")
     if not isinstance(obj["id"], str) or not ID_RE.fullmatch(obj["id"]) or obj["id"] != request_id:
@@ -64,24 +66,31 @@ def request_document(raw: bytes, request_id: str, key: str = "") -> dict:
 
 
 def cooldown_seconds(headers, body: str) -> float:
+    def valid(value):
+        # Preserve real deadlines, but never allow nonfinite/out-of-range
+        # values to overflow persisted timestamps or crash the worker.
+        return value if math.isfinite(value) and 0 <= value < MAX_COOLDOWN_TIMESTAMP - time.time() else 0.0
+
     delay = 0.0
     value = headers.get("Retry-After", "") if headers else ""
     try:
-        delay = max(0.0, float(value))
+        if not isinstance(value, str) or not re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
+            raise ValueError()
+        delay = valid(float(value))
     except (ValueError, TypeError):
         try:
             deadline = email.utils.parsedate_to_datetime(value)
             if deadline.tzinfo is None:
                 deadline = deadline.replace(tzinfo=dt.timezone.utc)
-            delay = max(0.0, deadline.timestamp() - time.time())
+            delay = valid(max(0.0, deadline.timestamp() - time.time()))
         except (ValueError, TypeError, OverflowError):
             pass
     for match in re.finditer(r"(?:cooldown(?:\s+wait)?|retry\s+after|wait)[\s:=]+(\d+(?:\.\d+)?)\s*(?:s\b|seconds?\b)", body, re.I):
-        delay = max(delay, float(match.group(1)))
+        delay = max(delay, valid(float(match.group(1))))
     # Google RPC RetryInfo commonly carries retryDelay: "120s" without a header.
     for match in re.finditer(r'"(?:retryDelay|retry_delay)"\s*:\s*"(\d+(?:\.\d+)?)s"', body):
-        delay = max(delay, float(match.group(1)))
-    return delay if math.isfinite(delay) else 0.0
+        delay = max(delay, valid(float(match.group(1))))
+    return delay
 
 
 class HTTPGateway:
@@ -109,11 +118,10 @@ class HTTPGateway:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 return {"success": False, "http_status": status, "error": "RESPONSE_TOO_LARGE"}, 0
-            obj = json.loads(raw)
+            obj = bounded_json_loads(raw)
             if not isinstance(obj, dict) or "error" in obj:
-                detail = json.dumps(obj, ensure_ascii=False)[:8192]
-                delay = cooldown_seconds(headers, detail)
-                return {"success": False, "http_status": status, "error": "UPSTREAM_ERROR", "detail": scrub(obj, self.key),
+                delay = cooldown_seconds(headers, raw[:8192].decode("utf-8", "replace"))
+                return {"success": False, "http_status": status, "error": "UPSTREAM_ERROR",
                         "retry_after_seconds": delay}, delay
             choices = obj.get("choices")
             message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
@@ -127,14 +135,17 @@ class HTTPGateway:
                           "usage": obj.get("usage"), "finish_reason": choices[0].get("finish_reason")}, self.key), 0
         except urllib.error.HTTPError as exc:
             try:
-                body = exc.read(8192).decode("utf-8", "replace")
+                try:
+                    body = exc.read(8192).decode("utf-8", "replace")
+                except (OSError, http.client.HTTPException):
+                    body = ""
                 delay = cooldown_seconds(exc.headers, body) if exc.code in (429, 503) else 0
-                return scrub({"success": False, "http_status": exc.code, "error": "HTTP_ERROR", "detail": body[:2500],
-                              "retry_after_seconds": delay}, self.key), delay
+                return {"success": False, "http_status": exc.code, "error": "HTTP_ERROR",
+                        "retry_after_seconds": delay}, delay
             finally:
                 exc.close()
-        except (OSError, ValueError, urllib.error.URLError) as exc:
-            return scrub({"success": False, "error": "TRANSPORT_OR_RESPONSE_ERROR", "detail": str(exc)[:1200]}, self.key), 0
+        except (OSError, ValueError, RecursionError, http.client.HTTPException, urllib.error.URLError):
+            return {"success": False, "error": "TRANSPORT_OR_RESPONSE_ERROR"}, 0
 
 
 def private_directory(path: Path):
@@ -235,8 +246,8 @@ class Worker:
             raise ValueError("The file relay currently requires macOS or Linux directory-descriptor support.")
         if not queue.is_absolute():
             raise ValueError("--queue must be an absolute path.")
-        if not math.isfinite(min_interval) or min_interval < 0:
-            raise ValueError("Minimum interval must be finite and nonnegative.")
+        if not math.isfinite(min_interval) or not 0 <= min_interval < MAX_COOLDOWN_TIMESTAMP - time.time():
+            raise ValueError("Minimum interval must be finite, nonnegative and within the supported timestamp range.")
         self.queue, self.gateway = queue, gateway
         self.interval, self.stable_seconds = min_interval, stable_seconds
         receipt_dir = receipt_dir or queue.parent / (queue.name + "-private-receipts")
@@ -248,9 +259,14 @@ class Worker:
         self.state_path = receipt_dir / ".cooldown.json"
         self.next_request_at = 0.0
         if self.state_path.exists() or self.state_path.is_symlink():
-            state_obj = json.loads(self.directories["receipts"].read(".cooldown.json"))
+            state_obj = bounded_json_loads(self.directories["receipts"].read(".cooldown.json"))
+            if not isinstance(state_obj, dict):
+                raise ValueError("Invalid persisted cooldown; inspect it before restarting.")
             deadline = state_obj.get("next_request_at")
-            if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline < 0:
+            # Check range before math.isfinite so a huge JSON integer cannot
+            # overflow the implicit float conversion. Do not reset bad state.
+            if (type(deadline) not in (int, float)
+                    or not 0 <= deadline < MAX_COOLDOWN_TIMESTAMP or not math.isfinite(deadline)):
                 raise ValueError("Invalid persisted cooldown; inspect it before restarting.")
             self.next_request_at = deadline
         self.seen = {}

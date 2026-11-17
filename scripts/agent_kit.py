@@ -33,12 +33,37 @@ DEFAULT_URL = "http://127.0.0.1:3425/v1"
 LOCAL_CLIENT_LABEL = "magpie-agent-kit"
 MAX_RESPONSE = 4 * 1024 * 1024
 MAX_MCP_LINE = 1024 * 1024
+MAX_JSON_DEPTH = 64
 
 
 class KitError(Exception):
     def __init__(self, code: str, message: str):
         self.code = code
         super().__init__(message)
+
+
+def bounded_json_loads(raw):
+    """Reject hostile nesting before recursive consumers see decoded JSON."""
+    def invalid_constant(_):
+        raise ValueError("Nonfinite JSON numbers are not supported.")
+
+    try:
+        value = json.loads(raw, parse_constant=invalid_constant)
+    except RecursionError:
+        raise ValueError("JSON nesting exceeds the supported limit.") from None
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, float) and not math.isfinite(item):
+            # A standards-shaped exponent such as 1e309 also decodes to inf;
+            # parse_constant only rejects the explicit NaN/Infinity spellings.
+            raise ValueError("Nonfinite JSON numbers are not supported.")
+        if isinstance(item, (dict, list)):
+            if depth >= MAX_JSON_DEPTH:
+                raise ValueError("JSON nesting exceeds the supported limit.")
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+    return value
 
 
 def redact(value: Any, secret: str = "") -> Any:
@@ -138,27 +163,23 @@ class Gateway:
                 if len(raw) > MAX_RESPONSE:
                     raise KitError("RESPONSE_TOO_LARGE", "Gateway response exceeded 4 MiB.")
         except urllib.error.HTTPError as exc:
-            try:
-                try:
-                    raw = exc.read(4096).decode("utf-8", "replace")
-                except (OSError, http.client.HTTPException):
-                    raw = "[error response body unavailable]"
-            finally:
-                exc.close()
-            detail = redact(raw, self.key)[:1200]
-            raise KitError("HTTP_ERROR", f"Gateway HTTP {exc.code}: {detail}") from None
+            # Upstream diagnostics can contain other accounts' tokens that are
+            # unknown to this client. Never publish the body, headers or reason.
+            status = exc.code
+            exc.close()
+            raise KitError("HTTP_ERROR", f"Gateway HTTP {status}: request did not complete.") from None
         except (urllib.error.URLError, socket.timeout, TimeoutError, OSError, http.client.HTTPException) as exc:
             if isinstance(exc, (socket.timeout, TimeoutError)) or isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)):
                 raise KitError("TIMEOUT", f"Gateway request timed out after {self.timeout:g} seconds.") from None
-            raise KitError("NETWORK_ERROR", redact(str(exc), self.key)) from None
+            raise KitError("NETWORK_ERROR", "Gateway connection did not complete.") from None
         try:
-            result = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            result = bounded_json_loads(raw)
+        except (ValueError, UnicodeDecodeError):
             raise KitError("INVALID_RESPONSE", "Gateway did not return valid JSON.") from None
         if not isinstance(result, dict):
             raise KitError("INVALID_RESPONSE", "Expected a JSON object from the gateway.")
         if "error" in result:
-            raise KitError("UPSTREAM_ERROR", json.dumps(redact(result["error"], self.key), ensure_ascii=False)[:1200])
+            raise KitError("UPSTREAM_ERROR", "Gateway reported an upstream error; no diagnostic body was retained.")
         return result
 
     def models(self) -> list[dict]:
@@ -339,8 +360,8 @@ def verify(gateway: Gateway, model: str) -> dict:
         if not isinstance(fn, dict) or fn.get("name") != "kit_probe" or not isinstance(call.get("id"), str) or not call["id"]:
             raise KitError("TOOL_CALL_INVALID", "Wrong function name or missing call ID.")
         try:
-            arguments = json.loads(fn.get("arguments", ""))
-        except (json.JSONDecodeError, TypeError):
+            arguments = bounded_json_loads(fn.get("arguments", ""))
+        except (ValueError, TypeError):
             raise KitError("TOOL_ARGUMENTS_INVALID", "Tool arguments were not valid JSON.") from None
         if arguments != {"nonce": nonce}:
             raise KitError("TOOL_ARGUMENTS_INVALID", "Tool did not pass the exact nonce and expected schema.")
@@ -390,8 +411,8 @@ def mcp_serve(gateway: Gateway, requested_model: str | None, inp=None, out=None)
             send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Message too large."}})
             continue
         try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
+            msg = bounded_json_loads(line)
+        except ValueError:
             send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Invalid JSON."}})
             continue
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
@@ -400,6 +421,9 @@ def mcp_serve(gateway: Gateway, requested_model: str | None, inp=None, out=None)
         if "id" not in msg:
             continue
         rid = msg["id"]
+        if rid is not None and (type(rid) not in (str, int) or isinstance(rid, str) and len(rid) > 1024):
+            send({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid request id."}})
+            continue
         method = msg["method"]
         params = msg.get("params", {})
         try:

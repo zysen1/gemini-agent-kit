@@ -34,10 +34,49 @@ class RuntimeTests(unittest.TestCase):
 
     def fake_binary(self, manager):
         manager._directories()
-        binary = manager.runtime_dir / "fixture-binary-never-executed"
+        folder = manager.runtime_dir / runtime.VERSION
+        runtime._private_dir(folder)
+        binary = folder / "Antigravity.Tools.AppImage"
         binary.write_bytes(b"fixture")
+        binary.chmod(0o700)
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+        self.enterContext(patch.object(runtime.platform, "machine", return_value="x86_64"))
+        self.enterContext(patch.dict(runtime.ASSETS, {("Linux", "x86_64"): ("fixture.AppImage", digest)}))
+        runtime._write_private(manager.runtime_dir / (runtime.VERSION + ".integrity.json"), {
+            "schema": 1, "version": runtime.VERSION, "system": "Linux", "architecture": "x86_64",
+            "archive_sha256": digest, "entry": binary.relative_to(folder).as_posix(),
+            "tree_sha256": runtime._tree_digest(folder),
+        })
         manager._binary = binary
         return binary
+
+    def mac_archive(self):
+        target = self.root / "fixture-mac.tar.gz"
+        with tarfile.open(target, "w:gz") as archive:
+            values = {
+                "Antigravity Tools.app/Contents/Info.plist": plistlib.dumps({
+                    "CFBundleShortVersionString": runtime.VERSION,
+                    "CFBundleExecutable": "antigravity-tools"}),
+                "Antigravity Tools.app/Contents/MacOS/antigravity-tools": b"fixture-never-run",
+                "Antigravity Tools.app/Contents/Resources/config.json": b'{"fixture":true}',
+            }
+            for name, data in values.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o755 if "/MacOS/" in name else 0o644
+                archive.addfile(info, io.BytesIO(data))
+        return target
+
+    def prepare_mac(self, manager):
+        archive = self.mac_archive()
+        content = archive.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        self.enterContext(patch.object(runtime.platform, "system", return_value="Darwin"))
+        self.enterContext(patch.object(runtime.platform, "machine", return_value="arm64"))
+        self.enterContext(patch.dict(runtime.ASSETS, {("Darwin", "arm64"): ("fixture.app.tar.gz", digest)}))
+        with patch.object(runtime, "_download", side_effect=lambda url, target, expected: target.write_bytes(content)):
+            manager.setup()
+        return manager._binary
 
     def archive(self, members):
         path = self.root / "fixture.tar.gz"
@@ -187,6 +226,101 @@ class RuntimeTests(unittest.TestCase):
                                         "CFBundleExecutable": "antigravity-tools"}))
         self.assertIsNone(runtime._mac_binary(app))
 
+    def test_mac_setup_downloads_instead_of_trusting_matching_external_app(self):
+        manager = self.manager()
+        with patch.object(runtime.subprocess, "Popen") as popen, \
+             patch.object(runtime, "_mac_binary", wraps=runtime._mac_binary) as inspect_app:
+            binary = self.prepare_mac(manager)
+            self.assertTrue(binary.is_relative_to(manager.runtime_dir))
+            self.assertEqual(manager.setup()["status"], "installed")
+            reopened = self.manager()
+            self.assertEqual(reopened._cached_binary(), binary)
+            # There is no search of /Applications or the user's Applications.
+            for call in inspect_app.call_args_list:
+                self.assertTrue(call.args[0].is_relative_to(manager.runtime_dir))
+            popen.assert_not_called()
+            self.assertFalse(manager.config_path.exists())
+        record = manager.runtime_dir / (runtime.VERSION + ".integrity.json")
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+
+    def test_mac_cache_requires_receipt_and_does_not_adopt_legacy_files(self):
+        manager = self.manager()
+        binary = self.prepare_mac(manager)
+        (manager.runtime_dir / (runtime.VERSION + ".integrity.json")).unlink()
+        with patch.object(runtime.subprocess, "Popen") as popen, \
+             patch.object(runtime, "_download") as download:
+            for operation in (manager.setup, manager.start):
+                with self.assertRaises(runtime.RuntimeErrorDetail):
+                    operation()
+            self.assertTrue(binary.exists())
+            popen.assert_not_called()
+            download.assert_not_called()
+            self.assertFalse(manager.config_path.exists())
+
+    def test_mac_cache_rejects_modified_resources_or_added_files_before_spawn(self):
+        for modification in ("resource", "binary", "added", "removed"):
+            with self.subTest(modification=modification):
+                manager = runtime.ManagerRuntime(self.root / modification, port=18879)
+                binary = self.prepare_mac(manager)
+                resource = binary.parent.parent / "Resources/config.json"
+                if modification == "resource":
+                    resource.write_bytes(b'{"fixture":false}')
+                elif modification == "binary":
+                    binary.write_bytes(b"modified-never-run")
+                elif modification == "added":
+                    added = binary.parent / "extra-loader"
+                    added.write_bytes(b"injected")
+                    added.chmod(0o600)
+                else:
+                    resource.unlink()
+                with patch.object(runtime.subprocess, "Popen") as popen:
+                    with self.assertRaises(runtime.RuntimeErrorDetail):
+                        manager.start()
+                    popen.assert_not_called()
+                    self.assertFalse(manager.config_path.exists())
+
+    def test_mac_receipt_rejects_wrong_release_and_unsafe_entry(self):
+        for field, value in (("archive_sha256", "0" * 64), ("architecture", "x86_64"),
+                             ("entry", "../outside"), ("entry", "/outside")):
+            with self.subTest(field=field, value=value):
+                manager = runtime.ManagerRuntime(self.root / (field + str(len(value))), port=18879)
+                self.prepare_mac(manager)
+                path = manager.runtime_dir / (runtime.VERSION + ".integrity.json")
+                record = json.loads(path.read_text())
+                record[field] = value
+                runtime._write_private(path, record)
+                with self.assertRaises(runtime.RuntimeErrorDetail):
+                    manager._cached_binary()
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions and symlinks")
+    def test_cache_rejects_readable_receipt_and_symlink_resource(self):
+        manager = self.manager()
+        binary = self.prepare_mac(manager)
+        receipt = manager.runtime_dir / (runtime.VERSION + ".integrity.json")
+        receipt.chmod(0o644)
+        with self.assertRaises(runtime.RuntimeErrorDetail):
+            manager._cached_binary()
+        receipt.chmod(0o600)
+        resource = binary.parent.parent / "Resources/config.json"
+        resource.unlink()
+        outside = self.root / "outside.json"
+        outside.write_bytes(b'{"fixture":true}')
+        resource.symlink_to(outside)
+        with self.assertRaises(runtime.RuntimeErrorDetail):
+            manager._cached_binary()
+        self.assertEqual(outside.read_bytes(), b'{"fixture":true}')
+
+    def test_linux_cache_modification_after_setup_is_not_executed(self):
+        manager = self.manager()
+        binary = self.fake_binary(manager)
+        binary.write_bytes(b"changed-after-setup")
+        with patch.object(runtime.platform, "system", return_value="Linux"), \
+             patch.object(runtime.subprocess, "Popen") as popen:
+            with self.assertRaises(runtime.RuntimeErrorDetail):
+                manager.start()
+            popen.assert_not_called()
+
     def test_occupied_port_preserves_other_service_and_config(self):
         with socket.socket() as existing:
             existing.bind(("127.0.0.1", 0))
@@ -209,8 +343,20 @@ class RuntimeTests(unittest.TestCase):
         with patch.object(runtime.platform, "system", return_value="Linux"), \
              patch.object(runtime.subprocess, "Popen", return_value=process) as popen, \
              patch.object(manager, "_probe", return_value=True), \
-             patch.dict(os.environ, {"ABV_DATA_DIR": "/other/private", "ABV_WEB_PASSWORD": "foreign",
-                                     "ABV_DATA_DIR_POINTER_FILE": "/other/pointer", "API_KEY": "foreign"}):
+             patch.dict(os.environ, {
+                 "ABV_DATA_DIR": "/other/private", "ABV_WEB_PASSWORD": "foreign",
+                 "ABV_DATA_DIR_POINTER_FILE": "/other/pointer", "API_KEY": "foreign",
+                 "OPENAI_API_KEY": "fixture-key", "GOOGLE_REFRESH_TOKEN": "fixture-token",
+                 "GEMINI_AGENT_GATEWAY_KEY": "fixture-gateway", "AWS_SECRET_ACCESS_KEY": "fixture-aws",
+                 "CODEX_AUTH_TOKEN": "fixture-codex", "SSH_AUTH_SOCK": "/agent/socket",
+                 "UNRELATED_PRIVATE_VALUE": "fixture-secret", "PYTHONPATH": "/inject/python",
+                 "PYTHONSTARTUP": "/inject/startup", "LD_PRELOAD": "/inject/library",
+                 "LD_LIBRARY_PATH": "/inject/libs", "DYLD_INSERT_LIBRARIES": "/inject/dylib",
+                 "DYLD_LIBRARY_PATH": "/inject/dylibs", "BASH_ENV": "/inject/bash",
+                 "GTK_MODULES": "/inject/gtk", "GIO_EXTRA_MODULES": "/inject/gio",
+                 "PATH": "/inject/bin", "LANG": "zh_CN.UTF-8", "DISPLAY": ":1",
+                 "HTTPS_PROXY": "http://127.0.0.1:7890", "SSL_CERT_FILE": "/trusted/ca.pem",
+             }):
             self.assertEqual(manager.start()["status"], "running")
             call = popen.call_args
             self.assertEqual(call.args[0], [str(binary), "--headless"])
@@ -221,6 +367,16 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(env["ABV_API_KEY"], manager.gateway_key)
             self.assertNotIn("ABV_DATA_DIR_POINTER_FILE", env)
             self.assertNotIn("API_KEY", env)
+            for key in ("OPENAI_API_KEY", "GOOGLE_REFRESH_TOKEN", "GEMINI_AGENT_GATEWAY_KEY",
+                        "AWS_SECRET_ACCESS_KEY", "CODEX_AUTH_TOKEN", "SSH_AUTH_SOCK", "UNRELATED_PRIVATE_VALUE",
+                        "PYTHONPATH", "PYTHONSTARTUP", "LD_PRELOAD", "LD_LIBRARY_PATH",
+                        "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "BASH_ENV", "GTK_MODULES", "GIO_EXTRA_MODULES"):
+                self.assertNotIn(key, env)
+            self.assertNotIn("/inject/bin", env["PATH"])
+            self.assertEqual(env["LANG"], "zh_CN.UTF-8")
+            self.assertEqual(env["DISPLAY"], ":1")
+            self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7890")
+            self.assertEqual(env["SSL_CERT_FILE"], "/trusted/ca.pem")
             manager.start()
             self.assertEqual(popen.call_count, 1)
             self.assertEqual(manager.stop()["status"], "stopped")

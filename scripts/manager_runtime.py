@@ -14,6 +14,7 @@ import plistlib
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -46,6 +47,34 @@ ASSETS = {
 WINDOWS_INSTALLER = DOWNLOAD_ROOT + "Antigravity.Tools_5.0.3_x64-setup.exe"
 MAX_DOWNLOAD = 200 * 1024 * 1024
 MAX_EXTRACT = 600 * 1024 * 1024
+
+# Only transport settings deliberately configured by the user and the small
+# OS/GUI/locale environment needed by the upstream application may cross this
+# boundary. Proxy URLs can contain their own proxy credentials; custom CA paths
+# change TLS trust. They are not a reason to inherit unrelated Agent/API secrets.
+# No PATH from the parent, loader injection (LD_*/DYLD_*), Python settings,
+# shell hooks, GTK module paths, or arbitrary credential variables are allowed.
+BACKEND_ENV_ALLOWLIST = frozenset({
+    "HOME", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
+    "SYSTEMROOT", "WINDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY",
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "LC_COLLATE",
+    "LC_NUMERIC", "LC_TIME", "LC_MONETARY", "TZ",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+})
+
+
+def _backend_environment(source=None) -> dict:
+    source = os.environ if source is None else source
+    environment = {key: value for key, value in source.items()
+                   if key.upper() in BACKEND_ENV_ALLOWLIST}
+    if os.name == "nt":
+        root = environment.get("SYSTEMROOT") or environment.get("SystemRoot") or r"C:\Windows"
+        environment["PATH"] = os.pathsep.join((os.path.join(root, "System32"), root))
+    else:
+        environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    return environment
 
 
 class RuntimeErrorDetail(RuntimeError):
@@ -86,6 +115,66 @@ def _write_private(path: Path, value: dict) -> None:
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def _private_metadata(path: Path, *, directory=False):
+    """Do not repair permissive/tampered caches and thereby silently trust them."""
+    try:
+        info = path.lstat()
+    except OSError:
+        raise RuntimeErrorDetail("组件缓存或完整性记录缺失，请重新准备受验证的组件。") from None
+    valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (not valid_type or (not directory and info.st_nlink != 1) or
+            os.name != "nt" and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077)):
+        raise RuntimeErrorDetail("组件缓存或完整性记录权限不安全；未执行缓存文件。")
+    return info
+
+
+def _tree_digest(folder: Path) -> str:
+    """Hash every entry, content and mode; reject added links/special files.
+
+    A private receipt detects changed caches, not a malicious same-user process
+    that can rewrite both cache and receipt. It is not a signature or sandbox.
+    """
+    _private_metadata(folder, directory=True)
+    digest, count, total = hashlib.sha256(), 0, 0
+    for parent, dirs, files in os.walk(folder, followlinks=False):
+        dirs.sort()
+        files.sort()
+        for name in dirs + files:
+            target = Path(parent) / name
+            is_directory = name in dirs
+            info = _private_metadata(target, directory=is_directory)
+            count += 1
+            if count > 20000:
+                raise RuntimeErrorDetail("组件缓存包含过多文件。")
+            content_hash = None
+            if not is_directory:
+                total += info.st_size
+                if total > MAX_EXTRACT:
+                    raise RuntimeErrorDetail("组件缓存大小超限。")
+                content = hashlib.sha256()
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+                try:
+                    with os.fdopen(os.open(target, flags), "rb") as stream:
+                        opened = os.fstat(stream.fileno())
+                        if (opened.st_dev, opened.st_ino, opened.st_size) != (info.st_dev, info.st_ino, info.st_size):
+                            raise RuntimeErrorDetail("组件缓存在检查时发生变化。")
+                        read_bytes = 0
+                        for block in iter(lambda: stream.read(1024 * 1024), b""):
+                            read_bytes += len(block)
+                            if read_bytes > info.st_size:
+                                raise RuntimeErrorDetail("组件缓存在检查时发生变化。")
+                            content.update(block)
+                        if read_bytes != info.st_size:
+                            raise RuntimeErrorDetail("组件缓存在检查时发生变化。")
+                except OSError:
+                    raise RuntimeErrorDetail("组件缓存无法完成完整性检查。") from None
+                content_hash = content.hexdigest()
+            entry = [target.relative_to(folder).as_posix(), "directory" if is_directory else "file",
+                     stat.S_IMODE(info.st_mode), content_hash]
+            digest.update(json.dumps(entry, ensure_ascii=True, separators=(",", ":")).encode() + b"\n")
+    return digest.hexdigest()
 
 
 def _release_url(url: str) -> str:
@@ -168,7 +257,12 @@ def _extract_tar(archive: Path, destination: Path) -> None:
                 if total > MAX_EXTRACT:
                     raise RuntimeErrorDetail("安装归档解包大小超限。")
             for member in members:
-                target = destination.joinpath(*PurePosixPath(member.name).parts)
+                parts = PurePosixPath(member.name).parts
+                # Some valid archives omit explicit parent-directory entries;
+                # Path.mkdir(parents=True) would otherwise leave those 0755.
+                for length in range(1, len(parts)):
+                    _private_dir(destination.joinpath(*parts[:length]))
+                target = destination.joinpath(*parts)
                 if member.isdir():
                     _private_dir(target)
                     continue
@@ -286,22 +380,36 @@ class ManagerRuntime:
 
     def _cached_binary(self) -> Path | None:
         folder = self.runtime_dir / VERSION
-        if folder.is_symlink():
-            raise RuntimeErrorDetail("组件安装目录不能是符号链接。")
         system = platform.system()
-        if system == "Darwin" and folder.exists():
-            for app in folder.glob("*.app"):
-                binary = _mac_binary(app)
-                if binary:
-                    return binary
-        if system == "Linux":
-            candidate = folder / "Antigravity.Tools.AppImage"
-            if candidate.is_file() and not candidate.is_symlink():
-                machine = self._architecture()
-                expected = ASSETS.get((system, machine), ("", ""))[1]
-                if hashlib.sha256(candidate.read_bytes()).hexdigest() == expected:
-                    return candidate
-        return None
+        if system not in {"Darwin", "Linux"} or not (folder.exists() or folder.is_symlink()):
+            return None
+        for parent in (self.data_dir, self.runtime_dir, folder):
+            _private_metadata(parent, directory=True)
+        receipt_path = self.runtime_dir / (VERSION + ".integrity.json")
+        _private_metadata(receipt_path)
+        receipt = _read_json(receipt_path)
+        asset = ASSETS.get((system, self._architecture()))
+        if (asset is None or receipt.get("schema") != 1 or receipt.get("version") != VERSION or
+                receipt.get("system") != system or receipt.get("architecture") != self._architecture() or
+                receipt.get("archive_sha256") != asset[1] or receipt.get("tree_sha256") != _tree_digest(folder)):
+            raise RuntimeErrorDetail("组件缓存完整性核对失败；保留原文件，未启动组件。")
+        entry = receipt.get("entry", "")
+        if not isinstance(entry, str):
+            raise RuntimeErrorDetail("组件缓存入口无效。")
+        relative = PurePosixPath(entry)
+        if (not entry or relative.is_absolute() or ".." in relative.parts or
+                "\\" in entry or ":" in entry):
+            raise RuntimeErrorDetail("组件缓存入口无效。")
+        binary = folder.joinpath(*relative.parts)
+        _private_metadata(binary)
+        if system == "Darwin":
+            candidates = [value for app in folder.glob("*.app")
+                          if (value := _mac_binary(app)) is not None]
+            if candidates != [binary]:
+                raise RuntimeErrorDetail("缓存组件没有唯一且匹配的 Mac 入口。")
+        elif entry != "Antigravity.Tools.AppImage" or hashlib.sha256(binary.read_bytes()).hexdigest() != asset[1]:
+            raise RuntimeErrorDetail("缓存 AppImage 与固定发布摘要不匹配。")
+        return binary
 
     @staticmethod
     def _architecture() -> str:
@@ -317,12 +425,9 @@ class ManagerRuntime:
             if self._binary:
                 return self.describe()
             system = platform.system()
-            if system == "Darwin":
-                for parent in (Path("/Applications"), Path.home() / "Applications"):
-                    for name in ("Antigravity Tools.app", "Antigravity.Tools.app"):
-                        self._binary = _mac_binary(parent / name)
-                        if self._binary:
-                            return self.describe()
+            # External .app metadata is not proof of its origin. New Mac
+            # installations always use the pinned archive. Existing running
+            # services can instead be explicitly connected by the caller.
             if system == "Windows":
                 self._binary = _windows_binary()
                 return self.describe()
@@ -350,7 +455,11 @@ class ManagerRuntime:
                     relative = Path("Antigravity.Tools.AppImage")
                     archive.rename(unpacked / relative)
                     (unpacked / relative).chmod(0o700)
+                receipt = {"schema": 1, "version": VERSION, "system": system,
+                           "architecture": self._architecture(), "archive_sha256": digest,
+                           "entry": relative.as_posix(), "tree_sha256": _tree_digest(unpacked)}
                 unpacked.rename(target)
+                _write_private(self.runtime_dir / (VERSION + ".integrity.json"), receipt)
                 self._binary = target / relative
             return self.describe()
 
@@ -404,14 +513,12 @@ class ManagerRuntime:
         with self._lock:
             if self._process is not None and self._process.poll() is None:
                 return self.describe()
-            if self._binary is None:
+            # Revalidate even after setup() in this process. A matching version
+            # string, or a prior cached Path, is never enough on Mac/Linux.
+            if platform.system() in {"Darwin", "Linux"}:
                 self._binary = self._cached_binary()
             if self._binary is None or not self._binary.is_file():
                 raise RuntimeErrorDetail("请先点击准备组件；Windows 需要先完成官方安装。")
-            if platform.system() == "Darwin":
-                app = self._binary.parent.parent.parent
-                if _mac_binary(app) != self._binary:
-                    raise RuntimeErrorDetail("已安装组件版本发生变化，请重新准备固定版本。")
             try:
                 with socket.socket() as check:
                     check.bind(("127.0.0.1", self.port))
@@ -420,8 +527,7 @@ class ManagerRuntime:
             self._prepare_config()
             empty_ui = self.runtime_dir / "empty-ui"
             _private_dir(empty_ui)
-            environment = {k: v for k, v in os.environ.items()
-                           if not k.startswith("ABV_") and k not in {"API_KEY", "WEB_PASSWORD", "AUTH_MODE"}}
+            environment = _backend_environment()
             environment.update(ABV_DATA_DIR=str(self.sidecar_dir), ABV_BIND_LOCAL_ONLY="1",
                                ABV_API_KEY=self.gateway_key, ABV_WEB_PASSWORD=self.admin_key,
                                ABV_AUTH_MODE="all_except_health", ABV_DIST_PATH=str(empty_ui))

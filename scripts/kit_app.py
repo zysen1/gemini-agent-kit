@@ -25,7 +25,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from paced_proxy import PacingGate, ClientDisconnected, cooldown_seconds
+from agent_kit import bounded_json_loads
+from paced_proxy import PacingGate, ClientDisconnected, cooldown_seconds, safe_response_headers
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "app" / "web"
@@ -195,18 +196,14 @@ class KitCore:
             if not self.manager_config:
                 runtime.update(self.runtime.describe())
             notice = str(e) if isinstance(e, AppError) else "请先准备服务。"
-        configured = False
-        try:
-            import tomllib
-            cfg = tomllib.loads((Path.home() / ".codex/config.toml").read_text(encoding="utf-8"))
-            provider = cfg.get("model_providers", {}).get("gemini_agent_kit", {})
-            configured = provider.get("base_url") == self.origin + "/v1"
-        except (OSError, ValueError, TypeError):
-            pass
+        # A normal panel refresh must not inspect another client's private
+        # configuration. Only explicit Codex preview/apply/restore actions do
+        # that. An owned receipt is a restore option, not proof of live config.
+        restore_available = bool(self.state.get("last_codex_receipt"))
         return {"runtime": runtime, "accounts": accounts, "models": models,
                 "selected_model": self.state.get("selected_model"),
                 "api": {"base_url": self.origin + "/v1", "key_present": True},
-                "codex": {"configured": configured, "desktop_verified": False},
+                "codex": {"restore_available": restore_available, "desktop_verified": False},
                 "last_check": self.state.get("last_check"), "notice": notice}
 
     def catalog(self):
@@ -368,6 +365,9 @@ class KitCore:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    # Bound idle headers/body/keep-alive connections. This is independent of
+    # the longer timeout used for an active upstream inference request.
+    timeout = 15
 
     def log_message(self, *args):
         pass  # No HTTP query strings, credentials or import bodies in logs.
@@ -409,13 +409,16 @@ class Handler(BaseHTTPRequestHandler):
             raise AppError("BAD_LENGTH", "请求内容大小不符合要求。", 413)
         if self.headers.get_content_type() != "application/json":
             raise AppError("CONTENT_TYPE", "请求必须使用 JSON。", 415)
-        raw = self.rfile.read(size)
         try:
-            d = json.loads(raw)
+            raw = self.rfile.read(size)
+        except TimeoutError:
+            raise AppError("REQUEST_TIMEOUT", "请求内容接收超时，请重新发送。", 408) from None
+        try:
+            d = bounded_json_loads(raw)
             if not isinstance(d, dict):
                 raise ValueError()
             return d
-        except ValueError:
+        except (ValueError, RecursionError):
             raise AppError("BAD_JSON", "请求格式不正确。") from None
 
     def do_GET(self):
@@ -519,10 +522,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.core.record_call(model, res.status, time.monotonic()-started, headers)
                 return
             self.send_response(res.status)
-            for name, value in res.getheaders():
-                if (name.lower() == "content-type"
-                        or name.lower() in ("x-mapped-model", "x-upstream-model") and safe_model_header(value)):
-                    self.send_header(name, value)
+            for name, value in safe_response_headers(res.getheaders()):
+                self.send_header(name, value)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()

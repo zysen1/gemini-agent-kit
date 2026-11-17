@@ -121,6 +121,19 @@ class FileBridgeTests(unittest.TestCase):
         self.step()
         self.assertEqual(self.result('huge')['inference_request_count'], 0)
 
+    def test_deep_json_does_not_stop_worker_or_call_gateway(self):
+        request = self.queue / 'requests' / 'a-deep.json'
+        request.write_bytes(b'{"id":"a-deep","prompt":' + b'[' * 15000 + b'0' + b']' * 15000 + b',"max_tokens":1}')
+        self.assertLess(request.stat().st_size, bridge.MAX_REQUEST_BYTES)
+        self.submit('b-valid')
+        self.assertTrue(self.step())
+        self.assertEqual(self.result('a-deep')['error'], 'INVALID_REQUEST')
+        self.assertEqual(self.result('a-deep')['inference_request_count'], 0)
+        self.assertEqual(self.gateway.calls, [])
+        self.assertTrue(self.step())
+        self.assertTrue(self.result('b-valid')['success'])
+        self.assertEqual(len(self.gateway.calls), 1)
+
     def test_cooldown_blocks_next_request_without_retrying(self):
         self.worker.gateway = self.gateway = FakeGateway(delay=60)
         self.submit('a'); self.submit('b')
@@ -171,6 +184,13 @@ class FileBridgeTests(unittest.TestCase):
     def test_google_retryinfo_delay_parsed(self):
         self.assertEqual(bridge.cooldown_seconds({}, '{"error":{"details":[{"retryDelay":"120.5s"}]}}'), 120.5)
 
+    def test_retry_delay_rejects_nonfinite_and_unrepresentable_deadlines(self):
+        for value in ('NaN', 'inf', '1e308', '-20', '9' * 100):
+            with self.subTest(value=value):
+                self.assertEqual(bridge.cooldown_seconds({'Retry-After': value}, ''), 0)
+        self.assertEqual(bridge.cooldown_seconds({}, '{"retryDelay":"' + '9' * 100 + 's"}'), 0)
+        self.assertEqual(bridge.cooldown_seconds({'Retry-After': '120.5'}, ''), 120.5)
+
     def test_null_message_returns_failure_instead_of_crashing(self):
         gateway = bridge.HTTPGateway(self.gateway.base_url, 'gemini-fixture', self.gateway.key)
         response = mock.MagicMock()
@@ -195,6 +215,48 @@ class FileBridgeTests(unittest.TestCase):
         self.assertFalse(result['success'])
         self.assertEqual(delay, 120)
 
+    def test_upstream_error_bodies_are_not_published_to_shared_results(self):
+        secret = 'synthetic-other-account-secret-not-the-gateway-key'
+        gateway = bridge.HTTPGateway(self.gateway.base_url, 'gemini-fixture', self.gateway.key)
+        body = json.dumps({'error': {'access_token': secret, 'refresh_token': secret,
+                                    'api_key': secret, 'message': secret,
+                                    'details': [{'retryDelay': '120s'}]}}).encode()
+        for status in (200, 429):
+            with self.subTest(status=status):
+                if status == 200:
+                    response = mock.MagicMock()
+                    response.__enter__.return_value = response
+                    response.status, response.headers, response.read.return_value = 200, {}, body
+                    gateway.opener.open = mock.Mock(return_value=response)
+                else:
+                    gateway.opener.open = mock.Mock(side_effect=urllib.error.HTTPError(
+                        gateway.base_url, 429, secret, {'Retry-After': '50'}, io.BytesIO(body)))
+                result, delay = gateway.call({'prompt': 'test', 'max_tokens': 10})
+                self.assertFalse(result['success'])
+                self.assertEqual(delay, 120)
+                self.assertNotIn('detail', result)
+                self.assertNotIn(secret, json.dumps(result))
+
+    def test_hostile_upstream_json_does_not_stop_worker(self):
+        gateway = bridge.HTTPGateway(self.gateway.base_url, 'gemini-fixture', self.gateway.key)
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status, response.headers = 200, {}
+        gateway.opener.open = mock.Mock(return_value=response)
+        self.worker.gateway = gateway
+        for index, raw in enumerate((b'[' * 15000 + b'0' + b']' * 15000,
+                                     b'{"choices":[{"message":{"content":"text"}}],"usage":NaN}',
+                                     b'{"choices":[{"message":{"content":"text"}}],"usage":1e309}')):
+            response.read.return_value = raw
+            name = 'hostile' + str(index)
+            self.submit(name)
+            self.assertTrue(self.step())
+            self.assertEqual(self.result(name)['error'], 'TRANSPORT_OR_RESPONSE_ERROR')
+        self.worker.gateway = self.gateway
+        self.submit('valid-after-error')
+        self.assertTrue(self.step())
+        self.assertTrue(self.result('valid-after-error')['success'])
+
     def test_cooldown_survives_restart(self):
         self.worker.gateway = self.gateway = FakeGateway(delay=60)
         self.submit('a'); self.submit('b'); self.step()
@@ -202,6 +264,17 @@ class FileBridgeTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(restarted.step(immediate=True))
         self.assertEqual(len(self.gateway.calls), 1)
+
+    def test_bad_persisted_cooldown_is_rejected_without_reset(self):
+        for raw in ('[]', '{"next_request_at":1e309}', '{"next_request_at":1e308}',
+                    '{"next_request_at":253402300799}',
+                    '{"next_request_at":' + '9' * 400 + '}'):
+            with self.subTest(state=raw[:50]):
+                self.worker.state_path.write_text(raw, encoding='utf-8')
+                with self.assertRaises(ValueError):
+                    bridge.Worker(self.queue, self.gateway, stable_seconds=0)
+                self.assertEqual(self.worker.state_path.read_text(encoding='utf-8'), raw)
+        self.assertEqual(self.gateway.calls, [])
 
     def test_no_clobber_publishing(self):
         target = self.queue / 'results' / 'test.json'

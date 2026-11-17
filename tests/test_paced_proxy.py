@@ -64,7 +64,7 @@ class Fixture(BaseHTTPRequestHandler):
 
     def respond(self, status, raw, headers=None):
         try:
-            self.send_response(status)
+            self.send_response(status, self.server.error_reason if status >= 400 else self.server.success_reason)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(raw)))
             for key, value in (headers or {}).items():
@@ -78,7 +78,9 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         with self.server.state_lock:
             self.server.calls.append({"method": "GET", "path": self.path, "headers": dict(self.headers)})
-        if urllib.parse.urlsplit(self.path).path == "/v1/models":
+        if self.server.mode == "get_error":
+            self.respond(403, self.server.error_body, self.server.error_headers)
+        elif urllib.parse.urlsplit(self.path).path == "/v1/models":
             self.respond(200, b'{"data":[{"id":"fixture/argon"}]}')
         elif self.path == "/v1/version":
             self.respond(200, b'{"version":"fixture-only"}')
@@ -98,10 +100,12 @@ class Fixture(BaseHTTPRequestHandler):
                 self.server.first_started.set()
                 self.server.release.wait(4)
             if mode == "sse":
-                self.send_response(200)
+                self.send_response(200, self.server.success_reason)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Transfer-Encoding", "chunked")
-                self.send_header("X-Model-ID", "fixture/argon")
+                self.send_header("X-Model-ID", "gemini-fixture")
+                for key, value in self.server.success_headers.items():
+                    self.send_header(key, value)
                 self.end_headers()
                 first = b'data: {"delta":"first"}\n\n'
                 self.wfile.write(f"{len(first):x}\r\n".encode() + first + b"\r\n")
@@ -114,9 +118,12 @@ class Fixture(BaseHTTPRequestHandler):
                 self.server.stream_finished.set()
                 return
             if mode == "429":
-                return self.respond(429, self.server.error_body, {"Retry-After": "61", "X-Model-ID": "fixture/argon"})
+                return self.respond(429, self.server.error_body, {
+                    "Retry-After": "61", "X-Model-ID": "fixture/argon", **self.server.error_headers})
             if mode == "503":
-                return self.respond(503, self.server.error_body)
+                return self.respond(503, self.server.error_body, self.server.error_headers)
+            if mode.startswith("error:"):
+                return self.respond(int(mode.split(":")[1]), self.server.error_body, self.server.error_headers)
             if mode == "redirect":
                 return self.respond(307, b"redirect body", {"Location": f"http://127.0.0.1:{self.server.server_port}/redirect-target"})
             if mode == "truncated":
@@ -129,9 +136,9 @@ class Fixture(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             self.respond(200, b'{"model":"fixture/argon","ok":true}', {
-                "X-Model-ID": "fixture/argon", "X-Actual-Model": "fixture/argon-route",
+                "X-Model-ID": "gemini-fixture", "X-Actual-Model": "gemini-fixture-route",
                 "Connection": "X-Remove-Response", "X-Remove-Response": "hop-only",
-                "Keep-Alive": "timeout=5",
+                "Keep-Alive": "timeout=5", **self.server.success_headers,
             })
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -163,6 +170,10 @@ class TestPacedProxy(unittest.TestCase):
         self.upstream.first_frame_sent = threading.Event()
         self.upstream.stream_finished = threading.Event()
         self.upstream.error_body = b'{"error":{"message":"All accounts rate-limited. Cooldown wait 47s."}}'
+        self.upstream.error_headers = {}
+        self.upstream.error_reason = None
+        self.upstream.success_headers = {}
+        self.upstream.success_reason = None
         self.upstream_thread = threading.Thread(target=self.upstream.serve_forever, daemon=True)
         self.upstream_thread.start()
         config = proxy.ProxyConfig(key=FIXTURE_KEY, upstream_port=self.upstream.server_port,
@@ -196,8 +207,8 @@ class TestPacedProxy(unittest.TestCase):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(raw)["model"], "fixture/argon")
-        self.assertEqual(headers.get("X-Model-ID"), "fixture/argon")
-        self.assertEqual(headers.get("X-Actual-Model"), "fixture/argon-route")
+        self.assertEqual(headers.get("X-Model-ID"), "gemini-fixture")
+        self.assertEqual(headers.get("X-Actual-Model"), "gemini-fixture-route")
         self.assertEqual(self.upstream.calls[0]["headers"]["Authorization"], "Bearer " + FIXTURE_KEY)
         self.assertEqual(self.upstream.calls[0]["body"], REQUEST_BODY)
         self.assertTrue(self.metadata_event.wait(1))
@@ -283,16 +294,65 @@ class TestPacedProxy(unittest.TestCase):
             self.assertFalse(self.upstream.stream_finished.is_set())
             self.upstream.release.set()
             self.assertIn(b"data: [DONE]", response.read())
-            self.assertEqual(response.getheader("X-Model-ID"), "fixture/argon")
+            self.assertEqual(response.getheader("X-Model-ID"), "gemini-fixture")
         finally:
             self.upstream.release.set()
             connection.close()
 
-    def test_429_status_and_body_preserved_and_retry_after_only_delays_next_request(self):
+    def test_successful_json_and_sse_strip_sensitive_response_headers_and_reason(self):
+        secret = "fixture-sensitive-success-header"
+        self.upstream.success_headers = {
+            "Set-Cookie": "session=" + secret, "Authorization": "Bearer " + secret,
+            "X-Private-Token": secret, "WWW-Authenticate": secret,
+            "X-Mapped-Model": secret + " invalid model", "Cache-Control": "private; " + secret,
+        }
+        self.upstream.success_reason = secret
+        for mode in ("ok", "sse"):
+            with self.subTest(mode=mode):
+                self.upstream.mode = mode
+                self.upstream.release.set()
+                connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+                try:
+                    connection.request("POST", "/v1/responses", REQUEST_BODY, {"Authorization": "Bearer " + FIXTURE_KEY})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.reason, "OK")
+                    self.assertNotIn(secret, str(response.getheaders()))
+                    self.assertEqual(response.getheader("X-Model-ID"), "gemini-fixture")
+                    self.assertEqual(response.getheader("Cache-Control"), "no-store")
+                    raw = response.read()
+                    self.assertIn(b"data: [DONE]" if mode == "sse" else b'"ok":true', raw)
+                finally:
+                    connection.close()
+
+    def test_response_header_allowlist_preserves_encoding_and_safe_model_only(self):
+        headers = proxy.safe_response_headers([
+            ("Content-Type", "application/json; charset=UTF-8; token=fixture-private"),
+            ("Content-Encoding", "gzip"), ("X-Upstream-Model", "models/gemini-fixture"),
+            ("X-Actual-Model", "Bearer fixture-private"), ("X-Private-Token", "fixture-private"),
+        ])
+        self.assertEqual(headers, [("Content-Type", "application/json; charset=utf-8"),
+                                  ("Content-Encoding", "gzip"), ("X-Upstream-Model", "models/gemini-fixture")])
+
+    def test_client_cookies_and_proxy_credentials_are_not_sent_to_upstream(self):
+        status, _, _ = self.request(headers={
+            "Cookie": "unrelated=fixture-private", "Cookie2": "fixture-private",
+            "Proxy-Authorization": "Basic fixture-private", "Anthropic-Version": "2023-06-01",
+        })
+        self.assertEqual(status, 200)
+        headers = {key.lower(): value for key, value in self.upstream.calls[0]["headers"].items()}
+        self.assertNotIn("cookie", headers)
+        self.assertNotIn("cookie2", headers)
+        self.assertNotIn("proxy-authorization", headers)
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+
+    def test_429_status_preserved_body_sanitized_and_retry_after_delays_next_request(self):
         self.upstream.mode = "429"
         status, headers, raw = self.request()
         self.assertEqual(status, 429)
-        self.assertEqual(raw, self.upstream.error_body)
+        self.assertEqual(json.loads(raw)["code"], "upstream_error")
+        self.assertNotIn(b"All accounts", raw)
+        self.assertNotIn("X-Model-ID", headers)
         self.assertEqual(headers.get("Retry-After"), "61")
         self.assertEqual(len(self.upstream.calls), 1, "The proxy must not automatically retry")
         self.upstream.mode = "ok"
@@ -300,15 +360,72 @@ class TestPacedProxy(unittest.TestCase):
         self.assertEqual(len(self.upstream.calls), 2)
         self.assertEqual(sum(self.clock.sleeps), 61)
 
-    def test_503_body_preserved_and_manager_cooldown_used_without_retry(self):
+    def test_503_body_sanitized_and_manager_cooldown_used_without_retry(self):
         self.upstream.mode = "503"
-        status, _, raw = self.request()
+        status, headers, raw = self.request()
         self.assertEqual(status, 503)
-        self.assertEqual(raw, self.upstream.error_body)
+        self.assertEqual(json.loads(raw)["code"], "upstream_error")
+        self.assertNotIn(b"All accounts", raw)
+        self.assertEqual(headers.get("Retry-After"), "47")
         self.assertEqual(len(self.upstream.calls), 1)
         self.upstream.mode = "ok"
         self.assertEqual(self.request()[0], 200)
         self.assertEqual(sum(self.clock.sleeps), 47)
+
+    def test_upstream_errors_never_disclose_diagnostic_bodies_or_headers(self):
+        secret = "fixture-sensitive-diagnostic"
+        self.upstream.error_body = json.dumps({"error": {"message": secret,
+            "refresh_token": "1//" + secret, "email": "fixture@example.invalid", "retryDelay": "4.25s"}}).encode()
+        self.upstream.error_reason = secret
+        self.upstream.error_headers = {
+            "Set-Cookie": "session=" + secret, "Authorization": "Bearer " + secret,
+            "X-API-Key": secret, "X-Debug-Account": "fixture@example.invalid",
+            "WWW-Authenticate": secret, "Retry-After": "2", "X-Model-ID": secret,
+        }
+        expected_body = {"code": "upstream_error",
+                         "message": "Upstream request did not complete. Check account access or quota."}
+        for status in (400, 401, 403, 404, 429, 500, 503):
+            with self.subTest(status=status):
+                self.upstream.mode = "error:" + str(status)
+                actual_status, headers, raw = self.request()
+                self.assertEqual(actual_status, status)
+                self.assertEqual(json.loads(raw), expected_body)
+                self.assertNotIn(secret, json.dumps(headers) + raw.decode())
+                self.assertNotIn("fixture@example.invalid", json.dumps(headers) + raw.decode())
+                self.assertEqual(headers.get("Retry-After"), "5" if status in (429, 503) else None)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(len(self.upstream.calls), 7, "Each request has exactly one upstream attempt")
+        self.assertTrue(self.metadata_event.wait(1))
+        self.assertNotIn(secret, json.dumps(self.metadata))
+        self.upstream.mode = "get_error"
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        try:
+            connection.request("GET", "/v1/models", headers={"Authorization": "Bearer " + FIXTURE_KEY})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 403)
+            self.assertEqual(response.reason, "Forbidden")
+            self.assertEqual(json.loads(response.read()), expected_body)
+            self.assertNotIn(secret, str(response.getheaders()))
+        finally:
+            connection.close()
+
+    def test_partial_request_body_times_out_without_an_upstream_call(self):
+        self.server.proxy_config.request_timeout = 0.05
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=2)
+        try:
+            connection.putrequest("POST", "/v1/responses")
+            connection.putheader("Authorization", "Bearer " + FIXTURE_KEY)
+            connection.putheader("Content-Length", "100")
+            connection.endheaders()
+            connection.send(b'{"partial":')
+            response = connection.getresponse()
+            self.assertEqual(response.status, 408)
+            self.assertEqual(json.loads(response.read())["code"], "request_timeout")
+        finally:
+            connection.close()
+        self.assertFalse(self.upstream.calls)
+        self.assertEqual(self.gate.begin_count, 0)
+        self.assertEqual(self.gate.next_allowed, 0)
 
     def test_all_post_routes_share_completion_based_35_second_gate(self):
         for path in ("/v1/responses", "/v1/chat/completions", "/v1/messages"):
@@ -472,6 +589,34 @@ class TestPacedProxy(unittest.TestCase):
         self.assertEqual(proxy.cooldown_seconds({}, b"No cooldown provided"), 0)
         self.assertEqual(proxy.cooldown_seconds({}, b'{"retryDelay":"-5s"}'), 0)
         self.assertEqual(proxy.cooldown_seconds({"Retry-After": formatdate(1065, usegmt=True)}, b"", now_wall=1000), 65)
+
+    def test_invalid_cooldown_cannot_poison_the_gate_or_overflow_sleep(self):
+        for value in ("NaN", "inf", "1e308", "-20", "9" * 100):
+            with self.subTest(value=value):
+                self.assertEqual(proxy.cooldown_seconds({"Retry-After": value}, b""), 0)
+                self.assertEqual(proxy.cooldown_seconds({}, json.dumps({"retryDelay": value}).encode()), 0)
+        self.assertEqual(proxy.cooldown_seconds({}, b'{"retryDelay":{"seconds":1e308}}'), 0)
+        self.assertEqual(proxy.cooldown_seconds({}, json.dumps({"retryDelay": "9" * 100 + "s"}).encode()), 0)
+        for value in (float("inf"), float("nan"), 1e308, -5, "invalid"):
+            gate = proxy.PacingGate(interval=0, clock=self.clock.monotonic, sleep=self.clock.sleep)
+            gate.begin()
+            gate.finish(value)
+            self.assertFalse(gate.lock.locked())
+            self.assertEqual(gate.next_allowed, self.clock.monotonic())
+        gate = proxy.PacingGate(interval=0, clock=self.clock.monotonic, sleep=self.clock.sleep)
+        gate.begin()
+        gate.finish(7201)
+        self.assertEqual(gate.begin(), 7201)
+        gate.finish()
+        self.assertEqual(self.clock.sleeps, [3600, 3600, 1])
+
+    def test_invalid_socket_timeouts_are_rejected_at_configuration(self):
+        for value in (0, -1, float("nan"), float("inf"), 1e308):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    proxy.ProxyConfig(FIXTURE_KEY, upstream_timeout=value)
+                with self.assertRaises(ValueError):
+                    proxy.ProxyConfig(FIXTURE_KEY, request_timeout=value)
 
 
 if __name__ == "__main__":
